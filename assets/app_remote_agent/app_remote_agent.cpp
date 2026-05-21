@@ -458,7 +458,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             }
             return;
         }
-        setStatus("connected", "Ready");
+        setStatus("speaking", "");
         sendJson(R"({"type":"event","event":"speechDone"})");
         sendAck(requestId);
         return;
@@ -695,6 +695,8 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
     mclog::tagInfo(TAG, "{}: {}", mode, text);
     if (is_visible_status_mode(mode)) {
         ensureAvatar();
+    } else {
+        hideAvatar();
     }
     LvglLockGuard lock;
     if (_status_dot) {
@@ -801,7 +803,7 @@ void AppRemoteAgent::audioPlaybackLoop()
         if (request.url[0]) {
             playAudioUrl(request.url);
         }
-        queueStatus("connected", "Ready");
+        queueStatus("speaking", "");
         sendJson(R"({"type":"event","event":"speechDone"})");
     }
     _audio_playback_task = nullptr;
