@@ -19,6 +19,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | Build, flash, or monitor the firmware | `references/firmware-build-flash.md` |
 | Implement compatible server/device messages | `references/device-protocol.md` |
 | Create, run, or maintain the Bun TypeScript brain server | `references/bun-brain-starter.md` |
+| Build a full voice agent server with Deepgram, TypeScript, and tools | `references/full-stack-voice-agent.md` |
 | Diagnose build, flash, link, or runtime failures | `references/troubleshooting.md` |
 
 ## Common Workflows

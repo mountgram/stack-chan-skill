@@ -14,6 +14,7 @@ This file tracks source material synthesized into `stack-chan-skill`.
 | Parent repo `.agents/skills/stackchan-firmware-flash/*` | local skill | local evidence | 2026-05-20 | high | Existing firmware link/build/flash workflow and troubleshooting. | Folded into this starter to avoid duplicate generic skill. | Adopted and generalized. |
 | Parent repo `firmware/app_remote_agent/*` | local firmware implementation | local evidence | 2026-05-20 | high | Reusable remote-agent firmware app, protocol handlers, audio, camera, UI, link script. | Private LAN URL must be parameterized; MIT SPDX preserved. | Adopted as `assets/app_remote_agent/`. |
 | Parent repo `src/device/*` and `src/server/routes.ts` | local server implementation | local evidence | 2026-05-20 | high | TypeScript command/event protocol, safety limits, WebSocket route behavior, binary audio/image framing. | Do not copy downstream app personality or private config. | Adopted for protocol and Bun starter docs. |
+| Parent repo `src/voice/*`, `src/agent/*`, and `src/server/routes.ts` | local server implementation | local evidence | 2026-05-21 | high | Full voice loop with Deepgram live STT, Deepgram streaming TTS, AI SDK tools, device command helpers, and turn coordination. | Generalize package names, routes, and architecture; omit downstream personality and private config. | Adopted for full-stack voice agent reference. |
 
 ## Decisions
 
@@ -31,7 +32,7 @@ This file tracks source material synthesized into `stack-chan-skill`.
 |---|---|---|
 | API surface and behavior contracts | complete | Protocol, firmware integration, and Bun starter references. |
 | Config/runtime options | complete | ESP-IDF vendor path, StackChan vendor path, `STACKY_WS_URL`, token, public base URL. |
-| Downstream use cases | complete | Blank repo setup, firmware integration, build/flash, server implementation, debug UI, audio/camera extensions. |
+| Downstream use cases | complete | Blank repo setup, firmware integration, build/flash, server implementation, full voice agent, debug UI, audio/camera extensions. |
 | Known issues/workarounds | partial | Troubleshooting covers IDF, vendor paths, app registration, serial ports, malformed protocol, and audio/camera limits. |
 | Version variance | partial | ESP-IDF v5.5.4 and upstream StackChan main documented; future upstream changes require maintenance. |
 | Asset template quality | partial | Firmware assets included; patch files may be added later if registration edits become automatable. |
@@ -51,6 +52,7 @@ Should trigger:
 - "vendor m5stack/StackChan and add app_remote_agent"
 - "build the StackChan firmware with idf.py"
 - "create a Bun brain server for StackChan"
+- "create a full StackChan voice agent with Deepgram"
 - "what protocol does the StackChan firmware app speak?"
 
 Should not trigger:
@@ -63,3 +65,4 @@ Should not trigger:
 ## Changelog
 
 - 2026-05-20: Initial `stack-chan-skill` skill with reference-backed docs, skill-local ESP-IDF convention, and reusable firmware asset plan.
+- 2026-05-21: Added full-stack voice agent reference covering Deepgram STT/TTS, AI SDK tools, and server turn coordination.
