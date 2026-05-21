@@ -37,11 +37,12 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 1. Use this skill repo's `vendor/` directory for firmware dependencies.
 2. Install ESP-IDF v5.5.4 into `vendor/esp-idf`; source `vendor/esp-idf/export.sh` before using `idf.py`.
 3. Clone upstream StackChan from `https://github.com/m5stack/StackChan` into `vendor/StackChan`. This upstream repo contains the official StackChan open-source resources; its ESP-IDF project lives under `vendor/StackChan/firmware/`.
-4. Copy or link `assets/app_remote_agent/` into this skill repo's `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
-5. Register `AppRemoteAgent` in the vendored firmware app list and `main.cpp`.
-6. Build from `vendor/StackChan/firmware`, never from the repo root.
-7. Flash only after choosing the correct serial port or confirming ESP-IDF auto-detect is safe.
-8. Implement the brain server against the protocol in `references/device-protocol.md`.
+4. Run `scripts/patch-stackchan.sh` to add `STACKY_WS_URL` compile-time forwarding to the vendored CMakeLists.txt.
+5. Copy or link `assets/app_remote_agent/` into this skill repo's `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
+6. Register `AppRemoteAgent` in the vendored firmware app list and `main.cpp`.
+7. Build from `vendor/StackChan/firmware`, never from the repo root.
+8. Flash only after choosing the correct serial port or confirming ESP-IDF auto-detect is safe.
+9. Implement the brain server against the protocol in `references/device-protocol.md`.
 
 ## Run Path
 
@@ -70,6 +71,8 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | `assets/app_remote_agent/app_remote_agent.cpp` | Thin StackChan terminal app implementation. |
 | `assets/app_remote_agent/app_remote_agent.h` | `AppRemoteAgent` declaration. |
 | `assets/app_remote_agent/link-into-stackchan.sh` | Symlink helper that links this skill's firmware asset into this skill's vendored StackChan tree. |
+| `scripts/patch-stackchan.sh` | Patches vendored `CMakeLists.txt` to forward `STACKY_WS_URL` from environment to compile definition. |
+| `.env.example` | Minimal env vars the firmware build derives `STACKY_WS_URL` from. |
 
 ## Completion Checklist
 

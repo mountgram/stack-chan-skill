@@ -17,6 +17,7 @@
 #include <mooncake_log.h>
 #include <smooth_lvgl.hpp>
 #include <stackchan/stackchan.h>
+#include <stackchan/avatar/decorators/decorators.h>
 #include <stackchan/avatar/skins/default/default.h>
 #include <web_socket.h>
 
@@ -487,6 +488,10 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         LvglLockGuard lock;
         GetStackChan().clearModifiers();
         if (GetStackChan().hasAvatar()) {
+            for (int id : _decorator_ids) {
+                GetStackChan().avatar().removeDecorator(id);
+            }
+            _decorator_ids.clear();
             GetStackChan().avatar().clearSpeech();
             GetStackChan().avatar().setEmotion(avatar::Emotion::Neutral);
         }
@@ -506,6 +511,64 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         }
         setStatus("connected", "Home");
         sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "avatarJson") == 0) {
+        LvglLockGuard lock;
+        if (GetStackChan().hasAvatar()) {
+            GetStackChan().updateAvatarFromJson(data.c_str());
+        }
+        sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "decorator") == 0) {
+        const char* action = doc["action"] | "";
+        LvglLockGuard lock;
+        if (GetStackChan().hasAvatar()) {
+            if (strcmp(action, "clear") == 0) {
+                for (int id : _decorator_ids) {
+                    GetStackChan().avatar().removeDecorator(id);
+                }
+                _decorator_ids.clear();
+                sendAck(requestId);
+                return;
+            }
+
+            if (strcmp(action, "add") == 0) {
+                const char* name      = doc["name"] | "";
+                uint32_t durationMs   = doc["durationMs"] | 3000;
+                uint32_t intervalMs   = doc["animationIntervalMs"] | 500;
+
+                int id = -1;
+                if (strcmp(name, "heart") == 0) {
+                    id = GetStackChan().avatar().addDecorator(
+                        std::make_unique<avatar::HeartDecorator>(lv_screen_active(), durationMs, intervalMs));
+                } else if (strcmp(name, "angry") == 0) {
+                    id = GetStackChan().avatar().addDecorator(
+                        std::make_unique<avatar::AngryDecorator>(lv_screen_active(), durationMs, intervalMs));
+                } else if (strcmp(name, "sweat") == 0) {
+                    id = GetStackChan().avatar().addDecorator(
+                        std::make_unique<avatar::SweatDecorator>(lv_screen_active(), durationMs, intervalMs));
+                } else if (strcmp(name, "shy") == 0) {
+                    id = GetStackChan().avatar().addDecorator(
+                        std::make_unique<avatar::ShyDecorator>(lv_screen_active(), durationMs));
+                } else if (strcmp(name, "dizzy") == 0) {
+                    id = GetStackChan().avatar().addDecorator(
+                        std::make_unique<avatar::DizzyDecorator>(lv_screen_active(), durationMs, intervalMs));
+                } else {
+                    sendError(requestId, "unknown decorator name");
+                    return;
+                }
+                if (id >= 0) {
+                    _decorator_ids.push_back(id);
+                }
+                sendAck(requestId);
+                return;
+            }
+        }
+        sendError(requestId, "unknown decorator action");
         return;
     }
 

@@ -67,6 +67,7 @@ private:
     std::atomic_bool _tasks_stopping{false};
     int _yaw                        = 0;
     int _pitch                      = 35;
+    std::vector<int> _decorator_ids;
     bool _pending_status_dirty      = false;
     char _pending_mode[24]          = {0};
     char _pending_text[160]         = {0};
