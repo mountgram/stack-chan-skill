@@ -51,12 +51,14 @@ Out of scope:
   - `SKILL.md` always.
   - Focused `references/*.md` only when routed.
   - `assets/app_remote_agent/*` only when installing or inspecting firmware assets.
+  - `assets/stacky-websocket-client.ts` when a runnable WebSocket protocol example is useful.
 
 ## Source And Evidence Model
 
 Authoritative sources:
 - `SOURCES.md` for provenance and decisions.
 - `assets/app_remote_agent/*` for the starter firmware implementation.
+- `assets/stacky-websocket-client.ts` for a runnable protocol coverage example.
 - Official M5Stack `m5stack/StackChan` repository for upstream firmware layout.
 - ESP-IDF v5.5.4 documentation for install, export, build, flash, and monitor commands.
 
@@ -73,7 +75,7 @@ Data that must not be stored:
 
 - `SKILL.md` contains runtime routing and the default build path.
 - `references/` contains focused runtime depth by decision or task.
-- `assets/` contains reusable starter firmware files.
+- `assets/` contains reusable starter firmware files and runnable protocol examples.
 - `SOURCES.md` contains source inventory, decisions, coverage, gaps, and changelog.
 - `scripts/` is unused until a repeated validation or install operation becomes fragile enough to automate.
 

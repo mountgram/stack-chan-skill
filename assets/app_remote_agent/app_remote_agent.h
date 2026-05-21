@@ -54,7 +54,7 @@ private:
     TaskHandle_t _audio_playback_task   = nullptr;
     TaskHandle_t _audio_capture_task    = nullptr;
     lv_obj_t* _root         = nullptr;
-    lv_obj_t* _status_label = nullptr;
+    lv_obj_t* _status_dot   = nullptr;
     lv_obj_t* _main_label   = nullptr;
     lv_obj_t* _log_label    = nullptr;
     uint32_t _last_reconnect_attempt = 0;
@@ -65,6 +65,8 @@ private:
     std::atomic_bool _audio_streaming{false};
     std::atomic_bool _audio_playback_cancel{false};
     std::atomic_bool _tasks_stopping{false};
+    std::atomic_int _volume{90};
+    int _current_emotion             = 0;
     int _yaw                        = 0;
     int _pitch                      = 35;
     std::vector<int> _decorator_ids;
@@ -86,6 +88,8 @@ private:
     void sendPacket(uint8_t type, const uint8_t* data, size_t len);
     void sendAck(const char* requestId);
     void sendError(const char* requestId, const char* message);
+    void ensureAvatar();
+    void hideAvatar();
     void setStatus(const char* mode, const char* text);
     void queueStatus(const char* mode, const char* text);
     void setLog(const char* text);

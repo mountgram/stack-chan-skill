@@ -71,6 +71,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | `assets/app_remote_agent/app_remote_agent.cpp` | Thin StackChan terminal app implementation. |
 | `assets/app_remote_agent/app_remote_agent.h` | `AppRemoteAgent` declaration. |
 | `assets/app_remote_agent/link-into-stackchan.sh` | Symlink helper that links this skill's firmware asset into this skill's vendored StackChan tree. |
+| `assets/stacky-websocket-client.ts` | Bun TypeScript device-client example covering the full WebSocket JSON and binary protocol. |
 | `scripts/patch-stackchan.sh` | Patches vendored `CMakeLists.txt` to forward `STACKY_WS_URL` from environment to compile definition. |
 | `.env.example` | Minimal env vars the firmware build derives `STACKY_WS_URL` from. |
 

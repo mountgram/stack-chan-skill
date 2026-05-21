@@ -27,12 +27,6 @@
 #include <cstdlib>
 #include <cstring>
 
-static bool is_quiet_status_mode(const char* mode)
-{
-    return mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "listening") == 0 || strcmp(mode, "thinking") == 0 ||
-                    strcmp(mode, "speaking") == 0);
-}
-
 #ifndef STACKY_WS_URL
 #define STACKY_WS_URL "ws://STACKY_BRAIN_HOST:6001/stacky/device?token=dev-token-change-me"
 #endif
@@ -130,10 +124,23 @@ static avatar::Emotion parse_emotion(const char* emotion)
     if (!emotion) return avatar::Emotion::Neutral;
     std::string value(emotion);
     if (value == "happy") return avatar::Emotion::Happy;
+    if (value == "angry") return avatar::Emotion::Angry;
     if (value == "sad") return avatar::Emotion::Sad;
-    if (value == "thinking" || value == "curious" || value == "surprised") return avatar::Emotion::Doubt;
-    if (value == "asleep") return avatar::Emotion::Sleepy;
+    if (value == "doubt" || value == "thinking" || value == "curious" || value == "surprised") return avatar::Emotion::Doubt;
+    if (value == "sleepy" || value == "asleep") return avatar::Emotion::Sleepy;
     return avatar::Emotion::Neutral;
+}
+
+static bool is_visible_status_mode(const char* mode)
+{
+    return mode && (strcmp(mode, "listening") == 0 || strcmp(mode, "thinking") == 0 || strcmp(mode, "speaking") == 0);
+}
+
+static lv_color_t status_color(const char* mode)
+{
+    if (mode && strcmp(mode, "connected") == 0) return lv_color_hex(0xFFD24A);
+    if (is_visible_status_mode(mode)) return lv_color_hex(0x35D0A4);
+    return lv_color_hex(0xFF4D5E);
 }
 
 static void panel_click_cb(lv_event_t* event)
@@ -165,9 +172,6 @@ void AppRemoteAgent::onOpen()
 
     {
         LvglLockGuard lock;
-        auto avatar = std::make_unique<avatar::DefaultAvatar>();
-        avatar->init(lv_screen_active());
-        GetStackChan().attachAvatar(std::move(avatar));
         createUi();
         view::create_home_indicator([&]() { close(); }, 0x33CC99, 0x134233);
     }
@@ -196,12 +200,15 @@ void AppRemoteAgent::createUi()
     lv_obj_add_flag(_root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_root, panel_click_cb, LV_EVENT_CLICKED, this);
 
-    _status_label = lv_label_create(_root);
-    lv_label_set_text(_status_label, "REMOTE.AGENT offline");
-    lv_obj_set_style_text_color(_status_label, lv_color_hex(0x80FFD0), 0);
-    lv_obj_align(_status_label, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_add_flag(_status_label, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(_status_label, panel_click_cb, LV_EVENT_CLICKED, this);
+    _status_dot = lv_obj_create(_root);
+    lv_obj_set_size(_status_dot, 14, 14);
+    lv_obj_set_style_radius(_status_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(_status_dot, lv_color_hex(0xFF4D5E), 0);
+    lv_obj_set_style_border_width(_status_dot, 0, 0);
+    lv_obj_set_style_pad_all(_status_dot, 0, 0);
+    lv_obj_align(_status_dot, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(_status_dot, panel_click_cb, LV_EVENT_CLICKED, this);
 
     _main_label = lv_label_create(_root);
     lv_label_set_long_mode(_main_label, LV_LABEL_LONG_WRAP);
@@ -395,12 +402,17 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "face") == 0) {
         const char* emotion = doc["emotion"] | "neutral";
+        if (strcmp(emotion, "none") == 0) {
+            hideAvatar();
+            sendAck(requestId);
+            return;
+        }
+        auto parsed = parse_emotion(emotion);
+        _current_emotion = static_cast<int>(parsed);
+        ensureAvatar();
         LvglLockGuard lock;
         if (GetStackChan().hasAvatar()) {
-            GetStackChan().avatar().setEmotion(parse_emotion(emotion));
-        }
-        if (_log_label) {
-            lv_label_set_text_fmt(_log_label, "face: %s", emotion);
+            GetStackChan().avatar().setEmotion(parsed);
         }
         sendAck(requestId);
         return;
@@ -438,7 +450,6 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             LvglLockGuard lock;
             if (GetStackChan().hasAvatar()) {
                 GetStackChan().avatar().clearSpeech();
-                GetStackChan().avatar().setEmotion(avatar::Emotion::Happy);
             }
         }
         if (audioUrl && strlen(audioUrl) > 0) {
@@ -471,6 +482,14 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         return;
     }
 
+    if (strcmp(type, "volume") == 0) {
+        int volume = doc["volume"].is<int>() ? doc["volume"].as<int>() : _volume.load();
+        _volume = clamp_int(volume, 0, 100);
+        GetHAL().setSpeakerVolume(static_cast<uint8_t>(_volume.load()), false);
+        sendAck(requestId);
+        return;
+    }
+
     if (strcmp(type, "stopAudio") == 0) {
         _audio_streaming = false;
         setStatus("thinking", "Mic stopped");
@@ -493,7 +512,6 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             }
             _decorator_ids.clear();
             GetStackChan().avatar().clearSpeech();
-            GetStackChan().avatar().setEmotion(avatar::Emotion::Neutral);
         }
         sendAck(requestId);
         return;
@@ -505,9 +523,6 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         {
             LvglLockGuard lock;
             GetStackChan().motion().moveWithSpeed(_yaw * 10, _pitch * 10, 500);
-            if (GetStackChan().hasAvatar()) {
-                GetStackChan().avatar().setEmotion(avatar::Emotion::Neutral);
-            }
         }
         setStatus("connected", "Home");
         sendAck(requestId);
@@ -515,6 +530,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "avatarJson") == 0) {
+        ensureAvatar();
         LvglLockGuard lock;
         if (GetStackChan().hasAvatar()) {
             GetStackChan().updateAvatarFromJson(data.c_str());
@@ -525,6 +541,9 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "decorator") == 0) {
         const char* action = doc["action"] | "";
+        if (strcmp(action, "add") == 0) {
+            ensureAvatar();
+        }
         LvglLockGuard lock;
         if (GetStackChan().hasAvatar()) {
             if (strcmp(action, "clear") == 0) {
@@ -613,7 +632,7 @@ void AppRemoteAgent::sendHello()
     auto id = GetHAL().getFactoryMacString("");
     char buffer[256];
     snprintf(buffer, sizeof(buffer),
-             R"({"type":"hello","id":"stacky-%s","version":1,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera"]})",
+             R"({"type":"hello","id":"stacky-%s","version":1,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume"]})",
              id.c_str());
     sendJson(buffer);
 }
@@ -621,10 +640,10 @@ void AppRemoteAgent::sendHello()
 void AppRemoteAgent::sendTelemetry()
 {
     _last_telemetry_at = GetHAL().millis();
-    char buffer[192];
+    char buffer[224];
     snprintf(buffer, sizeof(buffer),
-             R"({"type":"telemetry","battery":%d,"charging":%s,"wifiRssi":0,"pose":{"yaw":%d,"pitch":%d}})",
-             (int)GetHAL().getBatteryLevel(), GetHAL().isBatteryCharging() ? "true" : "false", _yaw, _pitch);
+             R"({"type":"telemetry","battery":%d,"charging":%s,"wifiRssi":0,"pose":{"yaw":%d,"pitch":%d},"volume":%d})",
+             (int)GetHAL().getBatteryLevel(), GetHAL().isBatteryCharging() ? "true" : "false", _yaw, _pitch, _volume.load());
     sendJson(buffer);
 }
 
@@ -643,18 +662,54 @@ void AppRemoteAgent::sendError(const char* requestId, const char* message)
     sendJson(buffer);
 }
 
+void AppRemoteAgent::ensureAvatar()
+{
+    if (GetStackChan().hasAvatar()) return;
+    LvglLockGuard lock;
+    auto avatar = std::make_unique<avatar::DefaultAvatar>();
+    avatar->init(lv_screen_active());
+    avatar->setEmotion(static_cast<avatar::Emotion>(_current_emotion));
+    GetStackChan().attachAvatar(std::move(avatar));
+    if (_root) {
+        lv_obj_move_foreground(_root);
+    }
+}
+
+void AppRemoteAgent::hideAvatar()
+{
+    LvglLockGuard lock;
+    if (GetStackChan().hasAvatar()) {
+        GetStackChan().avatar().clearSpeech();
+    }
+    for (int id : _decorator_ids) {
+        if (GetStackChan().hasAvatar()) {
+            GetStackChan().avatar().removeDecorator(id);
+        }
+    }
+    _decorator_ids.clear();
+    GetStackChan().resetAvatar();
+}
+
 void AppRemoteAgent::setStatus(const char* mode, const char* text)
 {
     mclog::tagInfo(TAG, "{}: {}", mode, text);
+    if (is_visible_status_mode(mode)) {
+        ensureAvatar();
+    }
     LvglLockGuard lock;
-    if (_status_label) {
-        lv_label_set_text_fmt(_status_label, "REMOTE.AGENT %s", mode);
+    if (_status_dot) {
+        lv_obj_set_style_bg_color(_status_dot, status_color(mode), 0);
     }
     if (_main_label) {
-        lv_label_set_text(_main_label, is_quiet_status_mode(mode) ? "" : text);
+        const bool show_main = mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
+        lv_label_set_text(_main_label, show_main && text ? text : "");
     }
     if (_log_label) {
-        lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
+        if (is_visible_status_mode(mode)) {
+            lv_label_set_text(_log_label, text ? text : "");
+        } else {
+            lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
+        }
     }
 }
 
@@ -879,7 +934,7 @@ void AppRemoteAgent::playAudioUrl(const char* url)
         return;
     }
 
-    GetHAL().setSpeakerVolume(75, false);
+    GetHAL().setSpeakerVolume(static_cast<uint8_t>(_volume.load()), false);
     audio_codec->EnableOutput(true);
     std::array<uint8_t, 2048> bytes{};
     std::vector<int16_t> samples;
@@ -927,7 +982,7 @@ void AppRemoteAgent::onClose()
         lv_obj_del(_root);
         _root = nullptr;
     }
-    _status_label = nullptr;
+    _status_dot   = nullptr;
     _main_label   = nullptr;
     _log_label    = nullptr;
     GetStackChan().resetAvatar();
