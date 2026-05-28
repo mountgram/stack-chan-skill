@@ -799,7 +799,7 @@ void AppRemoteAgent::clearRenderScene()
     }
     _render_nodes.clear();
     _render_active = false;
-    if (_status_dot) lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
+    moveStatusChromeForeground();
 }
 
 void AppRemoteAgent::renderSceneJson(const std::string& data)
@@ -920,9 +920,24 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
 
     _render_active = true;
     lv_obj_move_foreground(_render_root);
-    if (_status_dot) lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
-    if (_main_label) lv_label_set_text(_main_label, "");
-    if (_log_label) lv_label_set_text(_log_label, "");
+    moveStatusChromeForeground();
+}
+
+void AppRemoteAgent::moveStatusChromeForeground()
+{
+    if (_root) {
+        lv_obj_move_foreground(_root);
+    }
+    if (_status_dot) {
+        lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(_status_dot);
+    }
+    if (_main_label) {
+        lv_obj_move_foreground(_main_label);
+    }
+    if (_log_label) {
+        lv_obj_move_foreground(_log_label);
+    }
 }
 
 bool AppRemoteAgent::startRenderAnimation(ArduinoJson::JsonDocument& doc, const char* requestId)
@@ -1056,31 +1071,26 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
     mclog::tagInfo(TAG, "{}: {}", mode, text);
     if (is_visible_status_mode(mode) && !_render_active) {
         ensureAvatar();
-    } else if (!is_visible_status_mode(mode)) {
+    } else if (!is_visible_status_mode(mode) && !_render_active) {
         hideAvatar();
     }
     LvglLockGuard lock;
     if (_status_dot) {
         lv_obj_set_style_bg_color(_status_dot, status_color(mode), 0);
-        if (_render_active) {
-            lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
-        }
+        lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
     }
     if (_main_label) {
         const bool show_main = mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
-        lv_label_set_text(_main_label, !_render_active && show_main && text ? text : "");
+        lv_label_set_text(_main_label, show_main && text ? text : "");
     }
     if (_log_label) {
-        if (_render_active) {
-            lv_label_set_text(_log_label, "");
-        } else if (is_visible_status_mode(mode)) {
+        if (is_visible_status_mode(mode)) {
             lv_label_set_text(_log_label, text ? text : "");
         } else {
             lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
         }
     }
+    moveStatusChromeForeground();
 }
 
 void AppRemoteAgent::queueStatus(const char* mode, const char* text)
@@ -1099,6 +1109,7 @@ void AppRemoteAgent::setLog(const char* text)
     if (_log_label) {
         lv_label_set_text(_log_label, text);
     }
+    moveStatusChromeForeground();
 }
 
 void AppRemoteAgent::handleTap()

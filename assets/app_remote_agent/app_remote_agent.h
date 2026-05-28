@@ -130,6 +130,7 @@ private:
     void hideAvatar();
     void clearRenderScene();
     void renderSceneJson(const std::string& data);
+    void moveStatusChromeForeground();
     bool startRenderAnimation(ArduinoJson::JsonDocument& doc, const char* requestId);
     void stopRenderAnimation();
     void updateRenderAnimation();
