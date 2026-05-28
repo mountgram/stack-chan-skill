@@ -21,6 +21,7 @@ You are here because you want Claude Code, OpenCode, Codex, etc to help you:
 - run a local AI brain server
 - make the robot connect to that server over Wi-Fi
 - hack on robot behaviors like faces, speech, movement, lights, audio, tools, and personality
+- define custom rendered avatar faces and lightweight animations from the server
 
 This is not the robot personality. It is the reusable technical starter kit that lets an agent build the robot connection correctly. Personality prompts, provider choices, API keys, LAN IPs, memory, and product behavior belong in your own robot brain project.
 
@@ -84,6 +85,17 @@ Its job is to make StackChan act like a Wi-Fi robot terminal:
 
 The point is to keep complicated AI behavior off the microcontroller. The robot runs a thin app; your computer runs the smarter brain.
 
+The firmware app also includes a constrained server-driven renderer. The brain server can define a black-background `320x240` face scene from simple primitives, then run small animation layers for things like blinking and mouth movement. Firmware-owned connection/status text remains visible above rendered faces.
+
+Render animations are intentionally ESP32-friendly:
+
+- up to four active animation layers at a time
+- up to 32 total active tracks
+- transform and opacity tracks only: `x`, `y`, `scaleX`, `scaleY`, `rotation`, `opacity`
+- optional `audioLevel` tracks so firmware can locally drive values from mic or playback loudness
+
+This lets the server say "scale the mouth with playback level" once, without sending per-frame mouth updates over WebSocket.
+
 You do not need to understand all the firmware tooling before getting started. The agent uses this skill to handle those details and should explain hardware or setup blockers in plain language.
 
 ### `SKILL.md`
@@ -105,6 +117,7 @@ Current references cover:
 - firmware integration for `app_remote_agent`, which is the included robot-side Wi-Fi terminal app
 - build, flash, and monitor commands
 - server/device WebSocket protocol
+- server-driven rendering, blink behavior, multi-layer animation, and audio-reactive mouth controls
 - minimal Bun brain starter
 - full-stack voice agent starter with Deepgram and AI SDK tools
 - troubleshooting

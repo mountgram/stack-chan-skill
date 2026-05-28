@@ -35,6 +35,8 @@ using namespace smooth_ui_toolkit::lvgl_cpp;
 using namespace stackchan;
 
 static const char* TAG = "REMOTE.AGENT";
+static constexpr size_t MAX_RENDER_ANIMATIONS = 4;
+static constexpr size_t MAX_RENDER_TRACKS = 32;
 
 static int clamp_int(int value, int min, int max)
 {
@@ -95,6 +97,23 @@ static float read_float(ArduinoJson::JsonVariantConst value, float fallback)
     if (value.is<float>()) return value.as<float>();
     if (value.is<int>()) return static_cast<float>(value.as<int>());
     return fallback;
+}
+
+static int pcm_level_1000(const std::vector<int16_t>& samples)
+{
+    if (samples.empty()) return 0;
+    uint64_t total = 0;
+    for (auto sample : samples) {
+        total += static_cast<uint16_t>(std::abs(static_cast<int>(sample)));
+    }
+    int average = static_cast<int>(total / samples.size());
+    return clamp_int((average * 1000) / 12000, 0, 1000);
+}
+
+static int smooth_level_1000(int previous, int next)
+{
+    if (next > previous) return previous + ((next - previous) * 3) / 4;
+    return previous + (next - previous) / 4;
 }
 
 static float interpolate_keyframes(const std::vector<AppRemoteAgent::RenderKeyframe>& keyframes, uint32_t t)
@@ -729,9 +748,9 @@ void AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
 void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
-    char buffer[520];
+    char buffer[640];
     snprintf(buffer, sizeof(buffer),
-             R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000}}})",
+             R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
              id.c_str());
     sendJson(buffer);
 }
@@ -953,6 +972,23 @@ bool AppRemoteAgent::startRenderAnimation(ArduinoJson::JsonDocument& doc, const 
         return false;
     }
 
+    const char* animationId = doc["animationId"] | "";
+    if (!animationId[0]) {
+        sendError(requestId, "animationId required");
+        return false;
+    }
+
+    size_t existing_tracks = 0;
+    for (const auto& animation : _render_animations) {
+        if (strcmp(animation.animationId, animationId) != 0) {
+            existing_tracks += animation.tracks.size();
+        }
+    }
+    if (existing_tracks + tracks.size() > MAX_RENDER_TRACKS) {
+        sendError(requestId, "too many animation tracks");
+        return false;
+    }
+
     std::vector<RenderTrack> next_tracks;
     uint32_t duration = 0;
     for (auto track_doc : tracks) {
@@ -974,8 +1010,25 @@ bool AppRemoteAgent::startRenderAnimation(ArduinoJson::JsonDocument& doc, const 
         }
 
         RenderTrack track;
+        strncpy(track.animationId, animationId, sizeof(track.animationId) - 1);
         strncpy(track.target, target, sizeof(track.target) - 1);
         strncpy(track.property, property, sizeof(track.property) - 1);
+        auto audioLevel = track_doc["audioLevel"];
+        if (!audioLevel.isNull()) {
+            track.audioReactive = true;
+            const char* source = audioLevel["source"] | "playback";
+            strncpy(track.audioSource, source, sizeof(track.audioSource) - 1);
+            track.audioScale = read_float(audioLevel["scale"], 1.0f);
+            track.audioOffset = read_float(audioLevel["offset"], 0.0f);
+            if (audioLevel["min"].is<float>() || audioLevel["min"].is<int>()) {
+                track.audioMin = read_float(audioLevel["min"], 0.0f);
+                track.hasAudioMin = true;
+            }
+            if (audioLevel["max"].is<float>() || audioLevel["max"].is<int>()) {
+                track.audioMax = read_float(audioLevel["max"], 0.0f);
+                track.hasAudioMax = true;
+            }
+        }
         for (auto keyframe_doc : keyframes) {
             RenderKeyframe keyframe;
             keyframe.t = keyframe_doc["t"].is<int>() ? std::max(0, keyframe_doc["t"].as<int>()) : 0;
@@ -994,76 +1047,94 @@ bool AppRemoteAgent::startRenderAnimation(ArduinoJson::JsonDocument& doc, const 
         return false;
     }
 
-    _render_tracks = std::move(next_tracks);
-    _render_animation_duration = duration;
-    _render_animation_loop = doc["loop"] | false;
-    _render_animation_yoyo = doc["yoyo"] | false;
-    _render_animation_started_at = GetHAL().millis();
+    _render_animations.erase(std::remove_if(_render_animations.begin(), _render_animations.end(), [animationId](const RenderAnimationState& animation) {
+        return strcmp(animation.animationId, animationId) == 0;
+    }), _render_animations.end());
+    if (_render_animations.size() >= MAX_RENDER_ANIMATIONS) {
+        sendError(requestId, "too many animations");
+        return false;
+    }
+
+    RenderAnimationState animation;
+    strncpy(animation.animationId, animationId, sizeof(animation.animationId) - 1);
+    animation.tracks = std::move(next_tracks);
+    animation.duration = duration;
+    animation.loop = doc["loop"] | false;
+    animation.yoyo = doc["yoyo"] | false;
+    animation.startedAt = GetHAL().millis();
+    _render_animations.push_back(std::move(animation));
     _render_animation_last_frame_at = 0;
     return true;
 }
 
 void AppRemoteAgent::stopRenderAnimation()
 {
-    _render_tracks.clear();
-    _render_animation_started_at = 0;
+    _render_animations.clear();
     _render_animation_last_frame_at = 0;
-    _render_animation_duration = 0;
-    _render_animation_loop = false;
-    _render_animation_yoyo = false;
 }
 
 void AppRemoteAgent::updateRenderAnimation()
 {
-    if (!_render_active || _render_tracks.empty() || _render_animation_duration == 0) return;
+    if (!_render_active || _render_animations.empty()) return;
 
     uint32_t now = GetHAL().millis();
     if (_render_animation_last_frame_at != 0 && now - _render_animation_last_frame_at < 33) return;
     _render_animation_last_frame_at = now;
 
-    uint32_t elapsed = now - _render_animation_started_at;
-    if (_render_animation_loop) {
-        uint32_t cycle = _render_animation_yoyo ? _render_animation_duration * 2 : _render_animation_duration;
-        if (cycle == 0) return;
-        uint32_t cycle_t = elapsed % cycle;
-        if (_render_animation_yoyo && cycle_t > _render_animation_duration) {
-            elapsed = cycle - cycle_t;
-        } else {
-            elapsed = cycle_t;
-        }
-    } else if (elapsed > _render_animation_duration) {
-        elapsed = _render_animation_duration;
-    }
-
     LvglLockGuard lock;
-    for (const auto& track : _render_tracks) {
-        auto* node = find_render_node(_render_nodes, track.target);
-        if (!node || !node->obj) continue;
-        float value = interpolate_keyframes(track.keyframes, elapsed);
-        if (strcmp(track.property, "x") == 0) {
-            node->x = static_cast<int>(value);
-            lv_obj_set_pos(node->obj, node->x - node->w / 2, node->y - node->h / 2);
-        } else if (strcmp(track.property, "y") == 0) {
-            node->y = static_cast<int>(value);
-            lv_obj_set_pos(node->obj, node->x - node->w / 2, node->y - node->h / 2);
-        } else if (strcmp(track.property, "scaleX") == 0) {
-            node->scaleX = value;
-            lv_obj_set_style_transform_scale_x(node->obj, static_cast<int>(value * 256.0f), 0);
-        } else if (strcmp(track.property, "scaleY") == 0) {
-            node->scaleY = value;
-            lv_obj_set_style_transform_scale_y(node->obj, static_cast<int>(value * 256.0f), 0);
-        } else if (strcmp(track.property, "rotation") == 0) {
-            node->rotation = value;
-            lv_obj_set_style_transform_rotation(node->obj, static_cast<int>(value * 10.0f), 0);
-        } else if (strcmp(track.property, "opacity") == 0) {
-            node->opacity = value;
-            lv_obj_set_style_bg_opa(node->obj, clamp_int(static_cast<int>(value * 255.0f), 0, 255), 0);
+    for (const auto& animation : _render_animations) {
+        uint32_t elapsed = now - animation.startedAt;
+        if (animation.loop) {
+            uint32_t cycle = animation.yoyo ? animation.duration * 2 : animation.duration;
+            if (cycle == 0) continue;
+            uint32_t cycle_t = elapsed % cycle;
+            elapsed = animation.yoyo && cycle_t > animation.duration ? cycle - cycle_t : cycle_t;
+        } else if (elapsed > animation.duration) {
+            elapsed = animation.duration;
+        }
+
+        for (const auto& track : animation.tracks) {
+            auto* node = find_render_node(_render_nodes, track.target);
+            if (!node || !node->obj) continue;
+            float value = interpolate_keyframes(track.keyframes, elapsed);
+            if (track.audioReactive) {
+                int source_level = 0;
+                if (strcmp(track.audioSource, "mic") == 0) {
+                    source_level = _mic_audio_level.load();
+                } else if (strcmp(track.audioSource, "any") == 0) {
+                    source_level = std::max(_mic_audio_level.load(), _playback_audio_level.load());
+                } else {
+                    source_level = _playback_audio_level.load();
+                }
+                value += (static_cast<float>(source_level) / 1000.0f) * track.audioScale + track.audioOffset;
+                if (track.hasAudioMin) value = std::max(track.audioMin, value);
+                if (track.hasAudioMax) value = std::min(track.audioMax, value);
+            }
+            if (strcmp(track.property, "x") == 0) {
+                node->x = static_cast<int>(value);
+                lv_obj_set_pos(node->obj, node->x - node->w / 2, node->y - node->h / 2);
+            } else if (strcmp(track.property, "y") == 0) {
+                node->y = static_cast<int>(value);
+                lv_obj_set_pos(node->obj, node->x - node->w / 2, node->y - node->h / 2);
+            } else if (strcmp(track.property, "scaleX") == 0) {
+                node->scaleX = value;
+                lv_obj_set_style_transform_scale_x(node->obj, static_cast<int>(value * 256.0f), 0);
+            } else if (strcmp(track.property, "scaleY") == 0) {
+                node->scaleY = value;
+                lv_obj_set_style_transform_scale_y(node->obj, static_cast<int>(value * 256.0f), 0);
+            } else if (strcmp(track.property, "rotation") == 0) {
+                node->rotation = value;
+                lv_obj_set_style_transform_rotation(node->obj, static_cast<int>(value * 10.0f), 0);
+            } else if (strcmp(track.property, "opacity") == 0) {
+                node->opacity = value;
+                lv_obj_set_style_bg_opa(node->obj, clamp_int(static_cast<int>(value * 255.0f), 0, 255), 0);
+            }
         }
     }
 
-    if (!_render_animation_loop && now - _render_animation_started_at >= _render_animation_duration) {
-        stopRenderAnimation();
-    }
+    _render_animations.erase(std::remove_if(_render_animations.begin(), _render_animations.end(), [now](const RenderAnimationState& animation) {
+        return !animation.loop && now - animation.startedAt >= animation.duration;
+    }), _render_animations.end());
 }
 
 void AppRemoteAgent::setStatus(const char* mode, const char* text)
@@ -1142,10 +1213,14 @@ void AppRemoteAgent::captureAndSendAudioFrame()
     }
     std::vector<uint8_t> pcm;
     pcm.reserve(chunk_frames * 2);
+    std::vector<int16_t> mono_samples;
+    mono_samples.reserve(chunk_frames);
     for (size_t frame = 0; frame < chunk_frames; ++frame) {
         int16_t sample = input_chunk[frame * input_channels];
+        mono_samples.push_back(sample);
         append_u16_le(pcm, static_cast<uint16_t>(sample));
     }
+    _mic_audio_level = smooth_level_1000(_mic_audio_level.load(), pcm_level_1000(mono_samples));
     if (!_audio_frame_queue || pcm.size() > sizeof(AudioPcmFrame::data)) {
         return;
     }
@@ -1214,6 +1289,7 @@ void AppRemoteAgent::audioCaptureLoop()
                 }
                 input_enabled = false;
             }
+            _mic_audio_level = 0;
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
@@ -1340,11 +1416,13 @@ void AppRemoteAgent::playAudioUrl(const char* url)
             has_pending_byte = true;
         }
         if (!samples.empty()) {
+            _playback_audio_level = smooth_level_1000(_playback_audio_level.load(), pcm_level_1000(samples));
             audio_codec->OutputData(samples);
         }
         GetHAL().feedTheDog();
         vTaskDelay(1);
     }
+    _playback_audio_level = 0;
     audio_codec->EnableOutput(false);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);

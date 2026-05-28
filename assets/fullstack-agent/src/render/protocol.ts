@@ -29,10 +29,18 @@ export const renderSceneSchema = z.object({
 });
 
 export const renderKeyframeSchema = z.object({ t: z.number().min(0), value: z.number().finite() });
+export const renderAudioLevelSchema = z.object({
+  source: z.enum(["playback", "mic", "any"]).optional(),
+  scale: z.number().finite(),
+  offset: z.number().finite().optional(),
+  min: z.number().finite().optional(),
+  max: z.number().finite().optional(),
+});
 export const renderTrackSchema = z.object({
   target: z.string().min(1).max(64),
   property: z.enum(["x", "y", "scaleX", "scaleY", "rotation", "opacity"]),
   keyframes: z.array(renderKeyframeSchema).min(1).max(64),
+  audioLevel: renderAudioLevelSchema.optional(),
 });
 export const renderAnimationSchema = z.object({
   animationId: z.string().min(1).max(96),

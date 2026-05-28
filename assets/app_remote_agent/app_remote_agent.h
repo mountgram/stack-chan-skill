@@ -66,8 +66,26 @@ public:
 
     struct RenderTrack {
         char target[65] = {0};
+        char animationId[97] = {0};
         char property[16] = {0};
         std::vector<RenderKeyframe> keyframes;
+        bool audioReactive = false;
+        char audioSource[16] = {0};
+        float audioScale = 0.0f;
+        float audioOffset = 0.0f;
+        float audioMin = 0.0f;
+        float audioMax = 0.0f;
+        bool hasAudioMin = false;
+        bool hasAudioMax = false;
+    };
+
+    struct RenderAnimationState {
+        char animationId[97] = {0};
+        std::vector<RenderTrack> tracks;
+        uint32_t startedAt = 0;
+        uint32_t duration = 0;
+        bool loop = false;
+        bool yoyo = false;
     };
 
 private:
@@ -94,6 +112,8 @@ private:
     std::atomic_bool _audio_playback_cancel{false};
     std::atomic_bool _tasks_stopping{false};
     std::atomic_int _volume{90};
+    std::atomic_int _mic_audio_level{0};
+    std::atomic_int _playback_audio_level{0};
     int _current_emotion             = 0;
     int _yaw                        = 0;
     int _pitch                      = 35;
@@ -101,12 +121,8 @@ private:
     std::string _render_scene_id;
     std::string _render_scene_json;
     std::vector<RenderNodeRef> _render_nodes;
-    std::vector<RenderTrack> _render_tracks;
-    uint32_t _render_animation_started_at = 0;
     uint32_t _render_animation_last_frame_at = 0;
-    uint32_t _render_animation_duration = 0;
-    bool _render_animation_loop = false;
-    bool _render_animation_yoyo = false;
+    std::vector<RenderAnimationState> _render_animations;
     bool _render_active              = false;
     bool _pending_status_dirty      = false;
     char _pending_mode[24]          = {0};

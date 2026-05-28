@@ -14,6 +14,7 @@ The v1 renderer is intentionally small for the M5Stack ESP32-S3 target:
 - no paths
 - no gradients, masks, filters, fonts, or remote images
 - custom scenes replace the existing StackChan avatar view
+- firmware-owned status chrome remains above custom scenes
 
 ## Bundled Server Assets
 
@@ -44,8 +45,16 @@ Use it before touching hardware. It lets an agent load emotion presets, edit sce
 - `render.setScene`: redraws the previously defined scene by `sceneId`
 - `render.reset`: removes the custom render scene
 - `render.animate`: plays keyframes for `x`, `y`, `scaleX`, `scaleY`, `rotation`, and `opacity` at about 30 fps
+- multiple `render.animate` calls can run together as separate layers, capped at 4 active animations and 32 total tracks
+- animation tracks can optionally add local audio level influence from playback, mic, or the louder of either source
 
 The firmware advertises `render` in `hello` with primitive and limit metadata.
+
+Server-driven render owns only the avatar/content layer. Firmware status chrome is always preserved above it:
+
+- status dot remains visible
+- `Standby`, `Listening`, `Thinking`, `Speaking`, and error text remain visible
+- status updates move the firmware UI root foreground after render updates
 
 ## Scene Shape
 
@@ -73,6 +82,60 @@ Coordinate rules:
 - Node `x`/`y` are center-based.
 - Child coordinates are relative to parent `group` or shape center.
 - Firmware v1 applies parent position but not full inherited scale/rotation.
+
+## Animation Shape
+
+Animation commands target node IDs from the active scene:
+
+```json
+{
+  "type": "render.animate",
+  "requestId": "blink-1",
+  "animationId": "blink",
+  "tracks": [
+    { "target": "leftEye", "property": "scaleY", "keyframes": [{ "t": 0, "value": 1 }, { "t": 55, "value": 0.01 }, { "t": 125, "value": 1 }] },
+    { "target": "rightEye", "property": "scaleY", "keyframes": [{ "t": 0, "value": 1 }, { "t": 55, "value": 0.01 }, { "t": 125, "value": 1 }] }
+  ]
+}
+```
+
+Layering rules:
+
+- Each `animationId` is one active layer.
+- Sending the same `animationId` replaces that layer.
+- Sending a different `animationId` adds another layer, up to the firmware cap.
+- This allows blink and mouth animation to run together.
+- Avoid two simultaneous layers that write the same node/property unless replacing is intended.
+
+## Audio-Reactive Tracks
+
+Use `audioLevel` when the firmware should locally add mic or playback loudness to an animated value:
+
+```json
+{
+  "type": "render.animate",
+  "requestId": "mouth-1",
+  "animationId": "talking-mouth",
+  "loop": true,
+  "tracks": [
+    {
+      "target": "mouth",
+      "property": "scaleY",
+      "keyframes": [{ "t": 0, "value": 1 }, { "t": 480, "value": 1 }],
+      "audioLevel": { "source": "playback", "scale": 2.4, "min": 0.7, "max": 3.2 }
+    }
+  ]
+}
+```
+
+`audioLevel` fields:
+
+- `source`: `playback`, `mic`, or `any`; defaults to playback in firmware
+- `scale`: how strongly the normalized level affects the property
+- `offset`: optional extra value added after scaling
+- `min` and `max`: optional clamps for the final value
+
+The firmware computes audio levels from local PCM, so the server does not send per-frame audio envelopes. This is the preferred path for mouth movement during speech playback.
 
 ## Blink Behavior
 

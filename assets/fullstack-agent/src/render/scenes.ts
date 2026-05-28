@@ -81,7 +81,7 @@ export const blinkAnimation: RenderAnimation = {
 export const talkingAnimation: RenderAnimation = {
   animationId: "talking-mouth",
   loop: true,
-  tracks: [{ target: "mouth", property: "scaleY", keyframes: [{ t: 0, value: 1 }, { t: 120, value: 2.8 }, { t: 240, value: 0.7 }, { t: 360, value: 2.1 }, { t: 480, value: 1 }] }],
+  tracks: [{ target: "mouth", property: "scaleY", keyframes: [{ t: 0, value: 1 }, { t: 480, value: 1 }], audioLevel: { source: "playback", scale: 2.4, min: 0.7, max: 3.2 } }],
 };
 
 export const sampleScenes = [grumpyScene, neutralScene, happyScene, sadScene, angryScene, doubtScene, sleepyScene, surprisedScene];
