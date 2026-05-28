@@ -66,3 +66,4 @@ Should not trigger:
 
 - 2026-05-20: Initial `stack-chan-skill` skill with reference-backed docs, skill-local ESP-IDF convention, and reusable firmware asset plan.
 - 2026-05-21: Added full-stack voice agent reference covering Deepgram STT/TTS, AI SDK tools, and server turn coordination.
+- 2026-05-28: Added server-driven render protocol starter, local simulator, sample emotion scenes, and firmware scene rendering support for group/circle/ellipse/rect primitives.

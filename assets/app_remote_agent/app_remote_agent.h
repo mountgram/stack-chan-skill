@@ -57,6 +57,7 @@ private:
     lv_obj_t* _status_dot   = nullptr;
     lv_obj_t* _main_label   = nullptr;
     lv_obj_t* _log_label    = nullptr;
+    lv_obj_t* _render_root  = nullptr;
     uint32_t _last_reconnect_attempt = 0;
     uint32_t _last_telemetry_at      = 0;
     uint32_t _last_motion_at         = 0;
@@ -70,6 +71,9 @@ private:
     int _yaw                        = 0;
     int _pitch                      = 35;
     std::vector<int> _decorator_ids;
+    std::string _render_scene_id;
+    std::string _render_scene_json;
+    bool _render_active              = false;
     bool _pending_status_dirty      = false;
     char _pending_mode[24]          = {0};
     char _pending_text[160]         = {0};
@@ -90,6 +94,8 @@ private:
     void sendError(const char* requestId, const char* message);
     void ensureAvatar();
     void hideAvatar();
+    void clearRenderScene();
+    void renderSceneJson(const std::string& data);
     void setStatus(const char* mode, const char* text);
     void queueStatus(const char* mode, const char* text);
     void setLog(const char* text);

@@ -90,6 +90,7 @@ Do not commit a private LAN IP or token to reusable files.
 - connect to the brain WebSocket
 - send `hello`, telemetry, tap events, audio frames, and camera frames
 - receive screen, face, look, led, speak, startAudio, stopAudio, captureImage, stop, home, and ping commands
+- receive `render.defineScene`, `render.setScene`, `render.reset`, and acknowledge `render.animate` for server-driven avatar rendering
 - clamp pitch to `5..85` and yaw to `-128..128`
 - rate-limit motion commands
 - play server-generated PCM audio from a URL

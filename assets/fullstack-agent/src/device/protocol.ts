@@ -66,7 +66,13 @@ export type DecoratorCommand = {
   animationIntervalMs?: number;
 };
 
-export type DeviceCommand = ScreenCommand | FaceCommand | LookCommand | LedCommand | SpeakCommand | StartAudioCommand | StopAudioCommand | CaptureImageCommand | VolumeCommand | StopCommand | HomeCommand | AvatarJsonCommand | DecoratorCommand;
+export type RenderCommand =
+  | { type: "render.defineScene"; requestId: string; sceneId: string; size: { width: 320; height: 240 }; background?: string; nodes: unknown[] }
+  | { type: "render.setScene"; requestId: string; sceneId: string }
+  | { type: "render.animate"; requestId: string; animationId: string; loop?: boolean; yoyo?: boolean; tracks: unknown[] }
+  | { type: "render.reset"; requestId: string };
+
+export type DeviceCommand = ScreenCommand | FaceCommand | LookCommand | LedCommand | SpeakCommand | StartAudioCommand | StopAudioCommand | CaptureImageCommand | VolumeCommand | StopCommand | HomeCommand | AvatarJsonCommand | DecoratorCommand | RenderCommand;
 
 export function parseDeviceMessage(raw: string): DeviceMessage {
   const value = JSON.parse(raw) as unknown;

@@ -32,6 +32,7 @@ export function debugPage() {
   <main>
     <section>
       <h1>Stacky Chan Terminal <span id="status">offline</span></h1>
+      <div class="row"><a href="/render/simulator"><button type="button" class="secondary">Open Render Simulator</button></a></div>
       <h2>Talk To Agent</h2>
       <textarea id="prompt" rows="4" placeholder="look left and tell me a joke"></textarea>
       <div class="row"><button id="sendPrompt">Send Prompt</button><button id="startVoice" class="secondary">Wake Voice</button><button id="stopVoice" class="secondary">Standby</button></div>
@@ -45,6 +46,10 @@ export function debugPage() {
       <div class="row"><button id="home" class="secondary">Home</button><button id="stop" class="danger">Stop</button></div>
       <h2>Faces</h2>
       <div class="row"><button data-face="none">None</button><button data-face="neutral">Neutral</button><button data-face="happy">Happy</button><button data-face="angry">Angry</button><button data-face="sad">Sad</button><button data-face="doubt">Doubt</button><button data-face="sleepy">Sleepy</button></div>
+      <h2>Rendered Faces</h2>
+      <div class="row"><button data-render-face="grumpy">Grumpy</button><button data-render-face="neutral">Neutral</button><button data-render-face="happy">Happy</button><button data-render-face="sad">Sad</button></div>
+      <div class="row"><button data-render-face="angry">Angry</button><button data-render-face="doubt">Doubt</button><button data-render-face="sleepy">Sleepy</button><button data-render-face="surprised">Surprised</button></div>
+      <div class="row"><button id="resetRender" class="secondary">Reset Render Face</button></div>
       <h2>Avatar Features</h2>
       <div class="row"><button id="resetAvatar">Reset Features</button><button id="avatarSurprised">Surprised</button><button id="avatarSleepy">Sleepy</button><button id="avatarAngry">Angry</button></div>
       <div class="row"><textarea id="avatarJson" rows="4" placeholder='{"leftEye":{"rotation":1550,"weight":72},"mouth":{"weight":80}}'></textarea><button id="sendAvatarJson">Send Avatar JSON</button></div>
@@ -79,6 +84,20 @@ export function debugPage() {
       $('volume').value = String(volume);
       $('volumeValue').textContent = volume + '%';
     };
+    const BG = '#000000', EYE = '#eef7ff', EYE_SHADOW = '#84a4c4', CHEEK = '#ff9eb5';
+    const base = (name, nodes) => ({ type: 'render.defineScene', requestId: 'debug-render-' + Date.now(), sceneId: 'stacky.' + name + '.v1', size: { width: 320, height: 240 }, background: BG, nodes: [{ id: 'face', kind: 'group', x: 160, y: 120 }, ...nodes, { id: 'leftCheek', parent: 'face', kind: 'circle', x: -82, y: 38, r: 10, fill: CHEEK, opacity: 0.55 }, { id: 'rightCheek', parent: 'face', kind: 'circle', x: 82, y: 38, r: 10, fill: CHEEK, opacity: 0.55 }] });
+    const eyes = (left = {}, right = {}) => [{ id: 'leftEye', parent: 'face', kind: 'ellipse', x: -48, y: -20, rx: 28, ry: 20, fill: EYE, ...left }, { id: 'rightEye', parent: 'face', kind: 'ellipse', x: 48, y: -20, rx: 28, ry: 20, fill: EYE, ...right }, { id: 'leftPupil', parent: 'leftEye', kind: 'circle', x: 3, y: 2, r: 7, fill: BG }, { id: 'rightPupil', parent: 'rightEye', kind: 'circle', x: -3, y: 2, r: 7, fill: BG }];
+    const mouth = (props = {}) => ({ id: 'mouth', parent: 'face', kind: 'rect', x: 0, y: 50, width: 58, height: 8, radius: 4, fill: EYE, ...props });
+    const renderFaces = {
+      neutral: () => base('neutral', [...eyes(), mouth({ width: 54, y: 48 })]),
+      happy: () => base('happy', [...eyes({ y: -26, rotation: -4, scaleY: 0.9 }, { y: -26, rotation: 4, scaleY: 0.9 }), { id: 'smile', parent: 'face', kind: 'ellipse', x: 0, y: 46, rx: 34, ry: 18, fill: EYE }, { id: 'smileCut', parent: 'face', kind: 'rect', x: 0, y: 34, width: 78, height: 22, radius: 11, fill: BG }, mouth({ y: 54, width: 42, height: 6, radius: 3, fill: CHEEK, opacity: 0.72 })]),
+      sad: () => base('sad', [...eyes({ rotation: 12, scaleY: 0.7, y: -16 }, { rotation: -12, scaleY: 0.7, y: -16 }), { id: 'leftBrow', parent: 'face', kind: 'rect', x: -48, y: -50, width: 46, height: 8, radius: 4, rotation: -16, fill: EYE_SHADOW, opacity: 0.85 }, { id: 'rightBrow', parent: 'face', kind: 'rect', x: 48, y: -50, width: 46, height: 8, radius: 4, rotation: 16, fill: EYE_SHADOW, opacity: 0.85 }, mouth({ width: 56, height: 7, y: 54, fill: EYE_SHADOW })]),
+      angry: () => base('angry', [...eyes({ rotation: 13, scaleY: 0.8 }, { rotation: -13, scaleY: 0.8 }), { id: 'leftBrow', parent: 'face', kind: 'rect', x: -48, y: -48, width: 52, height: 9, radius: 5, rotation: 18, fill: EYE }, { id: 'rightBrow', parent: 'face', kind: 'rect', x: 48, y: -48, width: 52, height: 9, radius: 5, rotation: -18, fill: EYE }, mouth({ width: 62, y: 52 })]),
+      grumpy: () => base('grumpy', [...eyes({ rotation: 10, scaleY: 0.78 }, { rotation: -10, scaleY: 0.78 }), { id: 'leftBrow', parent: 'face', kind: 'rect', x: -48, y: -48, width: 50, height: 8, radius: 4, rotation: 14, fill: EYE_SHADOW }, { id: 'rightBrow', parent: 'face', kind: 'rect', x: 48, y: -48, width: 50, height: 8, radius: 4, rotation: -14, fill: EYE_SHADOW }, mouth({ width: 58, y: 52 })]),
+      doubt: () => base('doubt', [...eyes({ rotation: -8, x: -52, scaleY: 0.86 }, { rotation: -8, x: 52, scaleY: 0.62 }), { id: 'leftBrow', parent: 'face', kind: 'rect', x: -52, y: -52, width: 42, height: 7, radius: 4, rotation: -8, fill: EYE_SHADOW }, { id: 'rightBrow', parent: 'face', kind: 'rect', x: 52, y: -48, width: 42, height: 7, radius: 4, rotation: 14, fill: EYE_SHADOW }, mouth({ width: 50, height: 7, y: 52, rotation: -5, fill: EYE_SHADOW })]),
+      sleepy: () => base('sleepy', [...eyes({ scaleY: 0.16, y: -12, fill: EYE_SHADOW }, { scaleY: 0.16, y: -12, fill: EYE_SHADOW }), mouth({ width: 44, height: 7, y: 50, fill: EYE_SHADOW })]),
+      surprised: () => base('surprised', [...eyes({ rx: 30, ry: 28, y: -24 }, { rx: 30, ry: 28, y: -24 }), { id: 'mouth', parent: 'face', kind: 'ellipse', x: 0, y: 52, rx: 18, ry: 24, fill: EYE }]),
+    };
     const api = async (path, body) => {
       const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const json = await res.json();
@@ -100,6 +119,8 @@ export function debugPage() {
     $('sendPrompt').onclick = () => api('/api/prompt', { prompt: $('prompt').value });
     document.querySelectorAll('[data-look]').forEach(btn => btn.onclick = () => api('/api/command', { type: 'lookAt', direction: btn.dataset.look }));
     document.querySelectorAll('[data-face]').forEach(btn => btn.onclick = () => api('/api/command', { type: 'face', emotion: btn.dataset.face }));
+    document.querySelectorAll('[data-render-face]').forEach(btn => btn.onclick = () => api('/api/command', renderFaces[btn.dataset.renderFace]()));
+    $('resetRender').onclick = () => api('/api/command', { type: 'render.reset' });
     $('setFace').onclick = () => api('/api/command', { type: 'face', emotion: $('face').value });
     $('setScreen').onclick = () => api('/api/command', { type: 'screen', text: $('screenText').value, mode: 'connected' });
     $('setLed').onclick = () => api('/api/command', { type: 'led', color: $('ledColor').value });

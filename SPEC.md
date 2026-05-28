@@ -19,6 +19,7 @@ In scope:
 - Defining the JSON/binary protocol expected by the starter firmware and server.
 - Describing a minimal Bun TypeScript brain server shape.
 - Describing a full-stack voice agent server with Deepgram STT/TTS, TypeScript, AI SDK tools, and StackChan device control.
+- Providing a server-driven render protocol starter with local simulator and simple device-side scene rendering.
 
 Out of scope:
 - Downstream robot personality prompts.

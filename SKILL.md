@@ -20,6 +20,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | Implement compatible server/device messages | `references/device-protocol.md` |
 | Create, run, or maintain the Bun TypeScript brain server | `references/bun-brain-starter.md` |
 | Build a full voice agent server with Deepgram, TypeScript, and tools | `references/full-stack-voice-agent.md` |
+| Add custom server-driven avatar scenes or use the local render simulator | `references/server-driven-rendering.md` |
 | Diagnose build, flash, link, or runtime failures | `references/troubleshooting.md` |
 
 ## Common Workflows
@@ -75,6 +76,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | `assets/app_remote_agent/link-into-stackchan.sh` | Symlink helper that links this skill's firmware asset into this skill's vendored StackChan tree. |
 | `assets/app_remote_agent/boot-into-remote-agent.sh` | Patches the vendored launcher to open `REMOTE.AGENT` on boot while preserving launcher/home access. |
 | `assets/stacky-websocket-client.ts` | Bun TypeScript device-client example covering the full WebSocket JSON and binary protocol. |
+| `assets/fullstack-agent/src/render/` | Server render protocol, emotion presets, local simulator, and tests. |
 | `scripts/patch-stackchan.sh` | Patches vendored `CMakeLists.txt` to forward `STACKY_WS_URL` from environment to compile definition. |
 | `.env.example` | Minimal env vars the firmware build derives `STACKY_WS_URL` from. |
 
@@ -88,4 +90,5 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 - `AppLauncher` auto-opens `REMOTE.AGENT` on boot if `assets/app_remote_agent/boot-into-remote-agent.sh` was requested.
 - Firmware builds from `vendor/StackChan/firmware`.
 - Server exposes `/stacky/device` WebSocket and handles the documented command/event protocol.
+- Server exposes `/render/simulator` when using the fullstack starter render assets.
 - Running system shows device `hello` and telemetry after opening `REMOTE.AGENT`.

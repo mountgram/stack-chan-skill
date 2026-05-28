@@ -8,6 +8,9 @@ import { registry, type StackyWsData } from "../device/registry";
 import { DeepgramLiveSession, type LiveSttEvent } from "../voice/deepgram-live";
 import { DeepgramStreamingTts } from "../voice/deepgram-streaming-tts";
 import { debugPage } from "./debug-page";
+import { renderSimulatorPage } from "../render/simulator-page";
+import * as render from "../render/commands";
+import { validateRenderAnimation, validateRenderScene } from "../render/protocol";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const TURN_TIMEOUT_MS = 60_000;
@@ -364,6 +367,7 @@ export function createServer() {
 
       try {
         if (req.method === "GET" && url.pathname === "/") return new Response(debugPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        if (req.method === "GET" && url.pathname === "/render/simulator") return new Response(renderSimulatorPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
         if (req.method === "GET" && url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
         if (req.method === "GET" && url.pathname === "/health") return json({ ok: true, config: healthConfig(), device: registry.stateSnapshot() });
         if (req.method === "GET" && url.pathname.startsWith("/audio/")) {
@@ -387,6 +391,15 @@ export function createServer() {
         }
         if (req.method === "POST" && url.pathname === "/api/voice/start") return json(await startConversation());
         if (req.method === "POST" && url.pathname === "/api/voice/stop") return json(await stopConversation());
+        if (req.method === "POST" && url.pathname === "/api/render/scene") {
+          const scene = validateRenderScene(await req.json());
+          return json(render.defineScene(scene));
+        }
+        if (req.method === "POST" && url.pathname === "/api/render/animation") {
+          const animation = validateRenderAnimation(await req.json());
+          return json(render.animate(animation));
+        }
+        if (req.method === "POST" && url.pathname === "/api/render/reset") return json(render.reset());
         if (req.method === "POST" && url.pathname === "/api/command") {
           const body = await req.json() as Record<string, unknown>;
           const type = body.type;

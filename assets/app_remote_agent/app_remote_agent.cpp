@@ -54,6 +54,33 @@ static uint8_t level_luma(uint8_t y, uint8_t low, uint8_t high)
     return static_cast<uint8_t>((static_cast<int>(y - low) * 255) / std::max<int>(1, high - low));
 }
 
+static lv_color_t parse_hex_color(const char* value, uint32_t fallback)
+{
+    if (!value || value[0] != '#' || strlen(value) != 7) return lv_color_hex(fallback);
+    char* end = nullptr;
+    unsigned long parsed = strtoul(value + 1, &end, 16);
+    if (!end || *end != 0) return lv_color_hex(fallback);
+    return lv_color_hex(parsed & 0xffffff);
+}
+
+struct RenderFrame {
+    char id[65] = {0};
+    int x       = 0;
+    int y       = 0;
+};
+
+static bool find_render_frame(const std::vector<RenderFrame>& frames, const char* id, RenderFrame& out)
+{
+    if (!id || !id[0]) return false;
+    for (const auto& frame : frames) {
+        if (strcmp(frame.id, id) == 0) {
+            out = frame;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool find_luma_levels(const std::array<uint16_t, 256>& hist, size_t samples, uint8_t& low, uint8_t& high)
 {
     if (samples == 0) return false;
@@ -530,11 +557,47 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "avatarJson") == 0) {
+        clearRenderScene();
         ensureAvatar();
         LvglLockGuard lock;
         if (GetStackChan().hasAvatar()) {
             GetStackChan().updateAvatarFromJson(data.c_str());
         }
+        sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "render.defineScene") == 0) {
+        const char* sceneId = doc["sceneId"] | "";
+        if (!sceneId[0]) {
+            sendError(requestId, "sceneId required");
+            return;
+        }
+        _render_scene_id = sceneId;
+        _render_scene_json = data;
+        renderSceneJson(_render_scene_json);
+        sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "render.setScene") == 0) {
+        const char* sceneId = doc["sceneId"] | "";
+        if (_render_scene_id.empty() || _render_scene_id != sceneId) {
+            sendError(requestId, "scene not defined");
+            return;
+        }
+        renderSceneJson(_render_scene_json);
+        sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "render.animate") == 0) {
+        sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "render.reset") == 0) {
+        clearRenderScene();
         sendAck(requestId);
         return;
     }
@@ -630,9 +693,9 @@ void AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
 void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
-    char buffer[256];
+    char buffer[520];
     snprintf(buffer, sizeof(buffer),
-             R"({"type":"hello","id":"stacky-%s","version":1,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume"]})",
+             R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000}}})",
              id.c_str());
     sendJson(buffer);
 }
@@ -690,24 +753,148 @@ void AppRemoteAgent::hideAvatar()
     GetStackChan().resetAvatar();
 }
 
+void AppRemoteAgent::clearRenderScene()
+{
+    LvglLockGuard lock;
+    if (_render_root) {
+        lv_obj_delete(_render_root);
+        _render_root = nullptr;
+    }
+    _render_active = false;
+    if (_status_dot) lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
+}
+
+void AppRemoteAgent::renderSceneJson(const std::string& data)
+{
+    ArduinoJson::JsonDocument doc;
+    auto error = ArduinoJson::deserializeJson(doc, data);
+    if (error) return;
+
+    auto nodes = doc["nodes"].as<ArduinoJson::JsonArray>();
+    if (nodes.isNull() || nodes.size() > 64) return;
+
+    LvglLockGuard lock;
+    if (GetStackChan().hasAvatar()) {
+        GetStackChan().avatar().clearSpeech();
+    }
+    GetStackChan().resetAvatar();
+
+    if (_render_root) {
+        lv_obj_delete(_render_root);
+        _render_root = nullptr;
+    }
+
+    _render_root = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(_render_root, 320, 240);
+    lv_obj_align(_render_root, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_border_width(_render_root, 0, 0);
+    lv_obj_set_style_pad_all(_render_root, 0, 0);
+    lv_obj_set_style_bg_color(_render_root, parse_hex_color(doc["background"] | "#05070d", 0x05070d), 0);
+    lv_obj_set_style_bg_opa(_render_root, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(_render_root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(_render_root, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(_render_root, panel_click_cb, LV_EVENT_CLICKED, this);
+
+    std::vector<RenderFrame> frames;
+    frames.reserve(nodes.size());
+
+    for (auto node : nodes) {
+        const char* id = node["id"] | "";
+        const char* kind = node["kind"] | "";
+        const char* parent = node["parent"] | "";
+        if (!id[0] || !kind[0]) continue;
+
+        RenderFrame frame;
+        strncpy(frame.id, id, sizeof(frame.id) - 1);
+        frame.x = node["x"].is<int>() ? node["x"].as<int>() : 0;
+        frame.y = node["y"].is<int>() ? node["y"].as<int>() : 0;
+
+        RenderFrame parent_frame;
+        if (find_render_frame(frames, parent, parent_frame)) {
+            frame.x += parent_frame.x;
+            frame.y += parent_frame.y;
+        }
+
+        frames.push_back(frame);
+        if (strcmp(kind, "group") == 0) continue;
+
+        int w = 0;
+        int h = 0;
+        int radius = 0;
+        if (strcmp(kind, "circle") == 0) {
+            int r = node["r"].is<int>() ? node["r"].as<int>() : 1;
+            w = h = std::max(1, r * 2);
+            radius = LV_RADIUS_CIRCLE;
+        } else if (strcmp(kind, "ellipse") == 0) {
+            int rx = node["rx"].is<int>() ? node["rx"].as<int>() : 1;
+            int ry = node["ry"].is<int>() ? node["ry"].as<int>() : 1;
+            w = std::max(1, rx * 2);
+            h = std::max(1, ry * 2);
+            radius = LV_RADIUS_CIRCLE;
+        } else if (strcmp(kind, "rect") == 0) {
+            w = node["width"].is<int>() ? std::max(1, node["width"].as<int>()) : 1;
+            h = node["height"].is<int>() ? std::max(1, node["height"].as<int>()) : 1;
+            radius = node["radius"].is<int>() ? std::max(0, node["radius"].as<int>()) : 0;
+        } else {
+            continue;
+        }
+
+        auto* obj = lv_obj_create(_render_root);
+        lv_obj_set_size(obj, w, h);
+        lv_obj_set_pos(obj, frame.x - w / 2, frame.y - h / 2);
+        lv_obj_set_style_radius(obj, radius, 0);
+        lv_obj_set_style_border_width(obj, node["strokeWidth"].is<int>() ? node["strokeWidth"].as<int>() : 0, 0);
+        lv_obj_set_style_border_color(obj, parse_hex_color(node["stroke"] | "#000000", 0x000000), 0);
+        lv_obj_set_style_bg_color(obj, parse_hex_color(node["fill"] | "#eef7ff", 0xeef7ff), 0);
+        int opacity = node["opacity"].is<float>() ? clamp_int((int)(node["opacity"].as<float>() * 255), 0, 255) : 255;
+        lv_obj_set_style_bg_opa(obj, opacity, 0);
+        lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+        if (node["rotation"].is<int>()) {
+            lv_obj_set_style_transform_rotation(obj, node["rotation"].as<int>() * 10, 0);
+        }
+        if (node["scaleX"].is<float>()) {
+            lv_obj_set_style_transform_scale_x(obj, (int)(node["scaleX"].as<float>() * 256), 0);
+        }
+        if (node["scaleY"].is<float>()) {
+            lv_obj_set_style_transform_scale_y(obj, (int)(node["scaleY"].as<float>() * 256), 0);
+        }
+        if (node["visible"].is<bool>() && !node["visible"].as<bool>()) {
+            lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    _render_active = true;
+    lv_obj_move_foreground(_render_root);
+    if (_status_dot) lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
+    if (_main_label) lv_label_set_text(_main_label, "");
+    if (_log_label) lv_label_set_text(_log_label, "");
+}
+
 void AppRemoteAgent::setStatus(const char* mode, const char* text)
 {
     mclog::tagInfo(TAG, "{}: {}", mode, text);
-    if (is_visible_status_mode(mode)) {
+    if (is_visible_status_mode(mode) && !_render_active) {
         ensureAvatar();
-    } else {
+    } else if (!is_visible_status_mode(mode)) {
         hideAvatar();
     }
     LvglLockGuard lock;
     if (_status_dot) {
         lv_obj_set_style_bg_color(_status_dot, status_color(mode), 0);
+        if (_render_active) {
+            lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     if (_main_label) {
         const bool show_main = mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
-        lv_label_set_text(_main_label, show_main && text ? text : "");
+        lv_label_set_text(_main_label, !_render_active && show_main && text ? text : "");
     }
     if (_log_label) {
-        if (is_visible_status_mode(mode)) {
+        if (_render_active) {
+            lv_label_set_text(_log_label, "");
+        } else if (is_visible_status_mode(mode)) {
             lv_label_set_text(_log_label, text ? text : "");
         } else {
             lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
