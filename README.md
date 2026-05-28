@@ -2,40 +2,88 @@
 
 ## What Is This?
 
-This folder is an installable AI-agent skill for building and operating a StackChan remote-agent project.
+This folder is an installable AI-agent skill for people who want to build and hack on their StackChan robot with the help of a coding agent.
 
-StackChan is an M5Stack-based robot body with display, servos, LEDs, microphone, speaker, and optional camera support. This skill teaches a coding agent how to treat StackChan as a thin Wi-Fi terminal while a local TypeScript/Bun server acts as the brain.
-
-You are here because you want Claude Code, OpenCode, Codex, or another coding agent to know how to:
-
-- vendor and use the upstream `m5stack/StackChan` firmware project
-- install and source ESP-IDF in the right local place
-- add the reusable `app_remote_agent` firmware app to StackChan
-- build, flash, and monitor the firmware safely
-- create or maintain a local Bun brain server that speaks the StackChan WebSocket protocol
-- debug the path from hardware to firmware to server to AI tools
-
-This is not the robot personality. It is the reusable technical starter kit that lets an agent build the robot connection correctly. Personality prompts, provider choices, API keys, LAN IPs, memory, and product behavior belong in the downstream project that uses this skill.
-
-## What Is In This Repo?
-
-This README describes only this skill folder:
+If you are new here, the important idea is simple: your StackChan needs two cooperating pieces of software.
 
 ```text
-stack-chan-skill/
-  README.md
-  SKILL.md
-  SPEC.md
-  SOURCES.md
-  .env.example
-  .gitignore
-  assets/
-  references/
-  scripts/
-  vendor/
+1. Firmware on the robot
+   This runs directly on the M5Stack hardware. It controls the screen, motors, buttons, LEDs, microphone, speaker, camera, and Wi-Fi connection.
+
+2. A brain server on your computer
+   This runs normal TypeScript code. It talks to AI, speech-to-text, text-to-speech, memory, tools, and your custom robot behavior.
 ```
 
-It does not describe the outer application repo that may contain your actual StackChan brain server.
+This skill teaches an AI coding agent how to set up both sides so StackChan can become a remotely controlled AI robot instead of just a standalone firmware demo.
+
+You are here because you want Claude Code, OpenCode, Codex, etc to help you:
+
+- run a local AI brain server
+- make the robot connect to that server over Wi-Fi
+- hack on robot behaviors like faces, speech, movement, lights, audio, tools, and personality
+
+This is not the robot personality. It is the reusable technical starter kit that lets an agent build the robot connection correctly. Personality prompts, provider choices, API keys, LAN IPs, memory, and product behavior belong in your own robot brain project.
+
+## Quick Start
+
+Install the skill with the Skills CLI, then open Claude Code, OpenCode, Codex, or your preferred agent in the project where you want your robot brain code to live.
+
+```text
+npx skills add mountgram/stack-chan-skill
+```
+
+Copy-paste this into your agent if you are starting fresh:
+
+```text
+Use the stack-chan-skill to help me build and hack on my StackChan.
+
+I am starting from here and want a local robot brain server that my StackChan can connect to over Wi-Fi.
+
+First, read the skill's SKILL.md and only the references needed for this setup. Then:
+
+1. Set up the StackChan firmware tooling inside the skill folder's vendor directory.
+2. Install ESP-IDF v5.5.4 into vendor/esp-idf if it is not already present.
+3. Clone the official StackChan firmware into vendor/StackChan if it is not already present.
+4. Add this skill's app_remote_agent firmware app to the local StackChan firmware.
+5. Patch and register the app as documented by the skill.
+6. Create or update a Bun/TypeScript brain server in this project that can receive the robot WebSocket connection.
+7. Tell me what environment variables I need to set, without inventing secrets or hard-coding my private LAN details.
+8. Build what can be built safely.
+9. Before flashing hardware, show me the serial port you plan to use and wait for my confirmation.
+10. At the end, tell me exactly what was changed, what was verified, and what still needs real hardware validation.
+```
+
+### Agent Starting Checklist
+
+When an agent uses this skill, it should start by making the local setup concrete. Do not jump straight into writing robot personality code.
+
+1. Read `SKILL.md` to choose the right setup path.
+2. Check whether `vendor/esp-idf` exists in this skill folder.
+3. If ESP-IDF is missing, follow `references/esp-idf-install.md` and install ESP-IDF v5.5.4 into `vendor/esp-idf`.
+4. Check whether `vendor/StackChan` exists in this skill folder.
+5. If the official StackChan firmware is missing, follow `references/vendor-stackchan.md` and clone `https://github.com/m5stack/StackChan` into `vendor/StackChan`.
+6. Run or apply the documented firmware patch so the robot app can receive the brain server WebSocket URL at build time.
+7. Link or copy `assets/app_remote_agent/` into `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
+8. Register `AppRemoteAgent` in the local StackChan firmware app list so it appears as a runnable app on the robot.
+9. Build from `vendor/StackChan/firmware`, after sourcing `vendor/esp-idf/export.sh` in the same shell.
+10. Create or update the Bun/TypeScript brain server in the user's robot brain project.
+11. Verify server health, firmware URL/token config, and device WebSocket protocol compatibility.
+12. Flash only when hardware is connected and the serial port choice is explicit.
+
+## The Robot App This Skill Adds
+
+`app_remote_agent` is the small custom firmware app included with this skill.
+
+Its job is to make StackChan act like a Wi-Fi robot terminal:
+
+- it starts on the StackChan hardware
+- it connects to your computer's brain server over WebSocket
+- it sends robot events like button presses, audio, images, telemetry, and connection status
+- it receives commands like speak, show text, change face, move servos, set LEDs, and capture audio/image data
+
+The point is to keep complicated AI behavior off the microcontroller. The robot runs a thin app; your computer runs the smarter brain.
+
+You do not need to understand all the firmware tooling before getting started. The agent uses this skill to handle those details and should explain hardware or setup blockers in plain language.
 
 ### `SKILL.md`
 
@@ -50,10 +98,10 @@ Task-specific documentation for the agent. The skill is intentionally split this
 Current references cover:
 
 - StackChan hardware and architecture overview
-- starter repo architecture
-- ESP-IDF install under this skill's `vendor/esp-idf`
-- upstream StackChan checkout under this skill's `vendor/StackChan`
-- firmware integration for `app_remote_agent`
+- starter project architecture
+- ESP-IDF install, which is the toolchain used to build firmware for StackChan's ESP32 hardware
+- upstream StackChan checkout, which is the official firmware source this skill builds on
+- firmware integration for `app_remote_agent`, which is the included robot-side Wi-Fi terminal app
 - build, flash, and monitor commands
 - server/device WebSocket protocol
 - minimal Bun brain starter
@@ -62,11 +110,11 @@ Current references cover:
 
 ### `assets/app_remote_agent/`
 
-Reusable ESP-IDF firmware app files for the StackChan side of the remote-agent system.
+Reusable robot-side firmware app files for the StackChan side of the remote-agent system.
 
 These files implement the thin robot terminal behavior: connect to the brain server over WebSocket, exchange JSON commands/events, and support device capabilities exposed by the firmware.
 
-The helper script `assets/app_remote_agent/link-into-stackchan.sh` links these source files into the vendored upstream StackChan firmware tree.
+The helper script `assets/app_remote_agent/link-into-stackchan.sh` links these source files into your local copy of the official StackChan firmware.
 
 ### `assets/stacky-websocket-client.ts`
 
@@ -76,11 +124,11 @@ A TypeScript example client for the device protocol. Agents can use this to unde
 
 A bundled Bun/TypeScript starter app for a more complete server-side brain.
 
-It includes server routes, device protocol helpers, command safety, Deepgram voice plumbing, AI SDK tool wiring, a prompt file, tests, and a debug page. It is a template source for downstream projects, not a place to store your personal robot's secrets or long-term custom behavior.
+It includes server routes, device protocol helpers, command safety, Deepgram voice plumbing, AI SDK tool wiring, a prompt file, tests, and a debug page. It is a template source for your own robot brain project, not a place to store your personal robot's secrets or long-term custom behavior.
 
 ### `scripts/patch-stackchan.sh`
 
-A small helper that patches the vendored upstream StackChan firmware CMake file so the firmware build can receive `STACKY_WS_URL` from the environment.
+A small helper that patches the local copy of the official StackChan firmware so the robot app can be built with the WebSocket URL of your brain server.
 
 Run this only after `vendor/StackChan` exists.
 
@@ -88,16 +136,20 @@ Run this only after `vendor/StackChan` exists.
 
 Example firmware build variables used to construct the WebSocket URL for the robot.
 
-Copy values from it into your downstream environment and replace placeholders. Do not commit real tokens, private LAN details, or provider keys to reusable skill files.
+Copy values from it into your own robot brain project and replace placeholders. Do not commit real tokens, private LAN details, or provider keys to reusable skill files.
 
 ### `vendor/`
 
-An intentionally ignored working area for large local firmware dependencies:
+An intentionally ignored working area for large local firmware dependencies. These are installed locally because they are too large and too machine-specific to commit into this skill.
 
-- `vendor/esp-idf` should contain ESP-IDF v5.5.4
-- `vendor/StackChan` should contain a checkout of `https://github.com/m5stack/StackChan`
+You usually do not fill this folder by hand. Ask your agent to set up the StackChan firmware tools, and it should use this skill's references to create:
 
-`vendor/.gitkeep` only keeps the directory present. The actual vendor checkouts are local and should not be committed.
+- `vendor/esp-idf`, by installing ESP-IDF v5.5.4
+- `vendor/StackChan`, by cloning `https://github.com/m5stack/StackChan`
+
+If you are doing it manually, read `references/esp-idf-install.md` first, then `references/vendor-stackchan.md`.
+
+`vendor/.gitkeep` only keeps the empty directory present before those tools are installed. The actual local checkouts are ignored and should not be committed.
 
 ### `SPEC.md` And `SOURCES.md`
 
@@ -110,116 +162,83 @@ Most users do not need these files unless they are editing the skill.
 
 ## What Should The Agent Do With This Skill?
 
-At a high level, the agent should use this folder as reusable StackChan operating knowledge.
+At a high level, the agent should use this folder as reusable StackChan operating knowledge. The human should be able to say what they want in normal terms, such as "make my StackChan talk to a local AI server," and the agent should translate that into the correct firmware and server steps.
 
 The agent should not copy every file into every project. It should read `SKILL.md`, open only the references needed for the current task, and then make targeted changes in either:
 
-- this skill repo, when installing firmware vendors or linking reusable firmware assets
-- your downstream app repo, when creating or modifying the server-side brain
-- the local vendored StackChan checkout, when registering the firmware app or applying the documented CMake patch
+- this skill folder, when installing firmware tools or linking reusable firmware assets
+- your own robot brain project, when creating or modifying the server-side brain
+- the local copy of the official StackChan firmware, when registering the robot app or applying the documented CMake patch
 
 The intended architecture is:
 
 ```text
 StackChan hardware
-  runs vendored StackChan firmware + app_remote_agent
+  runs the official StackChan firmware plus this skill's remote-agent app
   connects over Wi-Fi/WebSocket
 
 Local brain server
   runs Bun/TypeScript
   receives audio, telemetry, images, button events
   sends speech, face, LED, servo, display, and control commands
-  calls AI/STT/TTS providers from the downstream app environment
+  calls AI, speech-to-text, text-to-speech, tools, and memory from your robot brain project
 ```
 
-## Getting Started As A Human
+## Installing The Skill
 
-1. Install this folder where your coding agent can discover skills.
-2. Start a new or existing downstream project for your StackChan brain server.
-3. Ask your agent to use `stack-chan-skill` to set up the StackChan remote-agent firmware and brain server.
-4. Expect the agent to work through ESP-IDF, upstream StackChan, firmware app linking, build/flash, and server setup.
-5. Keep credentials and machine-specific config in your downstream project environment, not in this skill folder.
-
-Good first prompt:
+The easiest path is the Skills CLI from [skills.sh](https://www.skills.sh/):
 
 ```text
-Use the stack-chan-skill to set up a StackChan remote-agent project here. Vendor ESP-IDF and upstream StackChan inside the skill's vendor directory, link app_remote_agent, create a Bun brain server, and tell me what still needs hardware validation.
+npx skills add mountgram/stack-chan-skill
 ```
 
-If you already have a server repo:
+That installs this skill from its GitHub source and makes it available to supported agents such as Claude Code, OpenCode, Codex, Cursor, and others.
+
+After installing, open your agent in the project where your robot brain code should live and use the Quick Start prompt above. The skill description in `SKILL.md` should cause the agent to load it automatically. If it does not, explicitly name it:
 
 ```text
-Use the stack-chan-skill to inspect this StackChan brain server and verify that it matches the firmware WebSocket protocol. Do not change personality or provider choices unless needed for protocol compatibility.
+Use the stack-chan-skill to help me build and hack on my StackChan.
 ```
 
-If you are flashing hardware:
+If your agent does not support the Skills CLI, install or copy this folder into a skills directory your agent scans, then point the agent at `SKILL.md`:
 
 ```text
-Use the stack-chan-skill to build the StackChan firmware. Before flashing, show me the serial port you plan to use and wait for confirmation.
+For StackChan firmware, WebSocket protocol, ESP-IDF, build/flash, or Bun brain-server work, first read stack-chan-skill/SKILL.md and follow its routing table. Do not invent paths or hard-code secrets.
 ```
 
-## Installing For Claude Code
+## Technical Details
 
-If you use Claude Code skills, place this whole folder in a skills directory Claude Code scans, for example:
+You can start without knowing these terms. They matter when the agent is installing tools, building firmware, or explaining a failure.
+
+### ESP-IDF
+
+ESP-IDF is Espressif's development toolkit for ESP32 chips. StackChan's M5Stack hardware is built around an ESP32-family chip, so firmware work uses ESP-IDF instead of normal Node, Bun, Python, or browser tooling.
+
+In practice, ESP-IDF gives the agent commands like `idf.py build`, `idf.py flash`, and `idf.py monitor`.
+
+You usually do not write ESP-IDF setup code yourself. The agent uses this skill to install ESP-IDF into:
 
 ```text
-~/.claude/skills/stack-chan-skill/
+vendor/esp-idf
 ```
 
-or keep it in a project-local skills directory if that is how your Claude Code setup is configured.
+### Official StackChan Firmware
 
-After installing, ask Claude Code a StackChan-specific task. The skill description in `SKILL.md` should cause it to load automatically. If it does not, explicitly name it:
+The official StackChan project lives at:
 
 ```text
-Use the stack-chan-skill to install the StackChan firmware dependencies and create the remote-agent brain server.
+https://github.com/m5stack/StackChan
 ```
 
-## Installing For OpenCode
+That official project contains M5Stack's open-source StackChan software. The important part for this skill is its `firmware/` directory, which is the ESP-IDF project that builds the software running on the robot.
 
-For OpenCode, keep or copy this folder under a skills directory known to your OpenCode configuration, commonly:
+This skill does not replace that official project. Instead, the agent clones a local copy into:
 
 ```text
-.agents/skills/stack-chan-skill/
+vendor/StackChan
 ```
 
-Then make sure your OpenCode configuration or workspace instructions expose that skills directory. In this layout, the agent should see `SKILL.md` and route StackChan firmware/server tasks to it.
-
-Example prompt:
-
-```text
-Use stack-chan-skill. Set up vendor/esp-idf, vendor/StackChan, app_remote_agent, and a Bun server that can receive the robot WebSocket connection.
-```
-
-## Installing For Codex Or Other Agents
-
-If your agent does not have a first-class skill system, you can still use this repo as structured context.
-
-Recommended options:
-
-- Add a short note to your project instructions telling the agent to read `stack-chan-skill/SKILL.md` for StackChan tasks.
-- Put this folder somewhere stable in the workspace and reference it by path in prompts.
-- For one-off work, tell the agent: `Read stack-chan-skill/SKILL.md first, then follow only the references needed for my task.`
-
-Example instruction for a generic agent:
-
-```text
-For StackChan firmware, WebSocket protocol, ESP-IDF, build/flash, or Bun brain-server work, first read .agents/skills/stack-chan-skill/SKILL.md and follow its routing table. Do not invent paths or hard-code secrets.
-```
-
-## First Real Workflow
-
-A typical blank-project setup looks like this:
-
-1. The agent reads `SKILL.md`.
-2. The agent installs ESP-IDF v5.5.4 into `vendor/esp-idf` under this skill folder.
-3. The agent clones `https://github.com/m5stack/StackChan` into `vendor/StackChan` under this skill folder.
-4. The agent runs `scripts/patch-stackchan.sh` so firmware builds can receive `STACKY_WS_URL`.
-5. The agent links or copies `assets/app_remote_agent/` into `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
-6. The agent registers `AppRemoteAgent` in the vendored StackChan app list and `main.cpp`.
-7. The agent builds from `vendor/StackChan/firmware`, after sourcing `vendor/esp-idf/export.sh` in the same shell.
-8. The agent creates or updates a Bun brain server in the downstream app repo.
-9. The agent verifies server health, firmware URL/token config, and device WebSocket connection.
-10. The agent flashes only when hardware is connected and the serial port choice is explicit.
+Then the agent adds `app_remote_agent` to that local firmware checkout.
 
 ## Safety And Boundaries
 
@@ -229,7 +248,7 @@ A typical blank-project setup looks like this:
 - Do not guess a serial port for flashing.
 - Do not claim firmware build, flash, or robot connection success unless the command or hardware check actually ran.
 - Do not force the StackChan motors by hand while powered or under software control.
-- Do not put downstream personality, memory, provider accounts, or private deployment details into this reusable skill.
+- Do not put your robot's personality, memory, provider accounts, or private deployment details into this reusable skill.
 
 ## When To Edit This Skill
 
@@ -241,4 +260,4 @@ Edit this skill when the reusable StackChan setup knowledge changes, such as:
 - the Bun starter protocol needs a reusable correction
 - agents repeatedly fail a setup step and the instructions need to be clearer
 
-Do not edit this skill just to customize one robot's personality, prompt, voice, LED style, provider, local URL, or API key. Put that in the downstream project.
+Do not edit this skill just to customize one robot's personality, prompt, voice, LED style, provider, local URL, or API key. Put that in your own robot brain project.
