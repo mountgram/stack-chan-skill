@@ -43,7 +43,7 @@ Use it before touching hardware. It lets an agent load emotion presets, edit sce
 - `render.defineScene`: stores and immediately draws a v1 render scene
 - `render.setScene`: redraws the previously defined scene by `sceneId`
 - `render.reset`: removes the custom render scene
-- `render.animate`: acknowledged for protocol compatibility; firmware keyframe playback is a follow-up
+- `render.animate`: plays keyframes for `x`, `y`, `scaleX`, `scaleY`, `rotation`, and `opacity` at about 30 fps
 
 The firmware advertises `render` in `hello` with primitive and limit metadata.
 
@@ -74,8 +74,88 @@ Coordinate rules:
 - Child coordinates are relative to parent `group` or shape center.
 - Firmware v1 applies parent position but not full inherited scale/rotation.
 
+## Blink Behavior
+
+Blinking should be modeled as a small runtime state machine, not as "close eyes every N seconds."
+
+Track at least:
+
+- whether the character is speaking
+- how long they have been silent
+- whether a blink is currently in progress
+- how long since the last blink
+- a randomized next dry-eye threshold
+- whether a speech-pause blink already happened
+- whether to occasionally do a double blink
+
+Basic behavior:
+
+```ts
+if (isSpeaking) {
+  silenceTimer = 0;
+  blinkRate = 0.75; // Blink less often while speaking.
+  didSilenceBlink = false;
+} else {
+  silenceTimer += delta;
+  blinkRate = 1.5; // Blink more readily during silence.
+  if (silenceTimer >= 250 && !didSilenceBlink) {
+    didSilenceBlink = true;
+    tryTriggerBlink(true); // Blink shortly after speech ends or pauses.
+  }
+}
+
+if (!isBlinking) {
+  blinkCounter += delta * blinkRate;
+  if (blinkCounter >= nextRandomBlinkMs) {
+    blinkCounter = 0;
+    nextRandomBlinkMs = randomBetween(5000, 8000);
+    if (tryTriggerBlink(false) && Math.random() < 0.05) {
+      setTimeout(() => tryTriggerBlink(true), 200); // Occasional double blink.
+    }
+  }
+}
+```
+
+Blinking has two causes:
+
+- physiological/dry-eye cadence: randomized 5-8 second intervals
+- conversational timing: a blink shortly after speech stops or pauses
+
+The blink itself should be a one-shot layered action with a soft weight envelope:
+
+```ts
+function pulseBlink() {
+  isBlinking = true;
+  const start = now() - clipDuration * 0.1;
+  while (elapsed < clipDuration) {
+    const progress = elapsed / clipDuration;
+    const weight = progress < 0.5 ? progress * 2 : (1 - progress) * 2;
+    applyBlinkWeight(weight);
+  }
+  applyBlinkWeight(0);
+  isBlinking = false;
+}
+```
+
+Architectural rules:
+
+- Blinking should be an additive animation layer on top of the main pose.
+- Do not bake blink state into emotion or speech animation.
+- A blink clip should only affect eyelids or blink-related controls.
+- Blink animation must not fight gaze direction, pupil tracking, facial emotion, head pose, or lip sync.
+- Application code should provide high-level state like `isSpeaking`, select a blink layer such as `blink-neutral`, and optionally expose debug readouts like `isBlinking`, `nextBlinkMs`, and `timeSinceLastBlink`.
+
+Why this is not just a timer:
+
+- Fixed intervals look robotic.
+- People blink differently during speech versus silence.
+- Speech pauses often cause visible blinks.
+- Blinks need cooldowns so they do not stack unnaturally.
+- Occasional double blinks add realism.
+- The motion needs a soft weight envelope, not an instant toggle.
+- Blinking must compose with other animation layers without overriding gaze, expression, or lip sync.
+
 ## Follow-Up Work
 
-- Add firmware-side keyframe runtime for blink and mouth animations.
 - Add render scene fallback behavior on server disconnect.
 - Decide whether scenes should persist across reconnect or be resent after every `hello`.

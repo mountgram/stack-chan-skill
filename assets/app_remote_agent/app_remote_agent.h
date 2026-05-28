@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include <ArduinoJson.hpp>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -29,7 +30,7 @@ public:
     void onClose() override;
     void handleTap();
 
-private:
+public:
     struct ReceivedMessage {
         bool binary = false;
         std::string text;
@@ -44,6 +45,32 @@ private:
         size_t len = 0;
         uint8_t data[1024] = {0};
     };
+
+    struct RenderNodeRef {
+        char id[65] = {0};
+        lv_obj_t* obj = nullptr;
+        int x = 0;
+        int y = 0;
+        int w = 1;
+        int h = 1;
+        float scaleX = 1.0f;
+        float scaleY = 1.0f;
+        float rotation = 0.0f;
+        float opacity = 1.0f;
+    };
+
+    struct RenderKeyframe {
+        uint32_t t = 0;
+        float value = 0.0f;
+    };
+
+    struct RenderTrack {
+        char target[65] = {0};
+        char property[16] = {0};
+        std::vector<RenderKeyframe> keyframes;
+    };
+
+private:
 
     std::unique_ptr<WebSocket> _websocket;
     std::mutex _mutex;
@@ -73,6 +100,13 @@ private:
     std::vector<int> _decorator_ids;
     std::string _render_scene_id;
     std::string _render_scene_json;
+    std::vector<RenderNodeRef> _render_nodes;
+    std::vector<RenderTrack> _render_tracks;
+    uint32_t _render_animation_started_at = 0;
+    uint32_t _render_animation_last_frame_at = 0;
+    uint32_t _render_animation_duration = 0;
+    bool _render_animation_loop = false;
+    bool _render_animation_yoyo = false;
     bool _render_active              = false;
     bool _pending_status_dirty      = false;
     char _pending_mode[24]          = {0};
@@ -96,6 +130,9 @@ private:
     void hideAvatar();
     void clearRenderScene();
     void renderSceneJson(const std::string& data);
+    bool startRenderAnimation(ArduinoJson::JsonDocument& doc, const char* requestId);
+    void stopRenderAnimation();
+    void updateRenderAnimation();
     void setStatus(const char* mode, const char* text);
     void queueStatus(const char* mode, const char* text);
     void setLog(const char* text);

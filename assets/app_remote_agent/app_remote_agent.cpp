@@ -81,6 +81,38 @@ static bool find_render_frame(const std::vector<RenderFrame>& frames, const char
     return false;
 }
 
+static AppRemoteAgent::RenderNodeRef* find_render_node(std::vector<AppRemoteAgent::RenderNodeRef>& nodes, const char* id)
+{
+    if (!id || !id[0]) return nullptr;
+    for (auto& node : nodes) {
+        if (strcmp(node.id, id) == 0) return &node;
+    }
+    return nullptr;
+}
+
+static float read_float(ArduinoJson::JsonVariantConst value, float fallback)
+{
+    if (value.is<float>()) return value.as<float>();
+    if (value.is<int>()) return static_cast<float>(value.as<int>());
+    return fallback;
+}
+
+static float interpolate_keyframes(const std::vector<AppRemoteAgent::RenderKeyframe>& keyframes, uint32_t t)
+{
+    if (keyframes.empty()) return 0.0f;
+    if (t <= keyframes.front().t) return keyframes.front().value;
+    for (size_t i = 1; i < keyframes.size(); ++i) {
+        const auto& previous = keyframes[i - 1];
+        const auto& next = keyframes[i];
+        if (t <= next.t) {
+            uint32_t span = next.t > previous.t ? next.t - previous.t : 1;
+            float alpha = static_cast<float>(t - previous.t) / static_cast<float>(span);
+            return previous.value + (next.value - previous.value) * alpha;
+        }
+    }
+    return keyframes.back().value;
+}
+
 static bool find_luma_levels(const std::array<uint16_t, 256>& hist, size_t samples, uint8_t& low, uint8_t& high)
 {
     if (samples == 0) return false;
@@ -306,6 +338,7 @@ void AppRemoteAgent::onRunning()
     } else {
         processMessages();
         sendQueuedAudioFrames();
+        updateRenderAnimation();
         if (GetHAL().millis() - _last_telemetry_at > 3000) {
             sendTelemetry();
         }
@@ -592,6 +625,9 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "render.animate") == 0) {
+        if (!startRenderAnimation(doc, requestId)) {
+            return;
+        }
         sendAck(requestId);
         return;
     }
@@ -756,10 +792,12 @@ void AppRemoteAgent::hideAvatar()
 void AppRemoteAgent::clearRenderScene()
 {
     LvglLockGuard lock;
+    stopRenderAnimation();
     if (_render_root) {
         lv_obj_delete(_render_root);
         _render_root = nullptr;
     }
+    _render_nodes.clear();
     _render_active = false;
     if (_status_dot) lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
 }
@@ -780,9 +818,11 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
     GetStackChan().resetAvatar();
 
     if (_render_root) {
+        stopRenderAnimation();
         lv_obj_delete(_render_root);
         _render_root = nullptr;
     }
+    _render_nodes.clear();
 
     _render_root = lv_obj_create(lv_screen_active());
     lv_obj_set_size(_render_root, 320, 240);
@@ -842,6 +882,8 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
         auto* obj = lv_obj_create(_render_root);
         lv_obj_set_size(obj, w, h);
         lv_obj_set_pos(obj, frame.x - w / 2, frame.y - h / 2);
+        lv_obj_set_style_transform_pivot_x(obj, w / 2, 0);
+        lv_obj_set_style_transform_pivot_y(obj, h / 2, 0);
         lv_obj_set_style_radius(obj, radius, 0);
         lv_obj_set_style_border_width(obj, node["strokeWidth"].is<int>() ? node["strokeWidth"].as<int>() : 0, 0);
         lv_obj_set_style_border_color(obj, parse_hex_color(node["stroke"] | "#000000", 0x000000), 0);
@@ -861,6 +903,19 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
         if (node["visible"].is<bool>() && !node["visible"].as<bool>()) {
             lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
         }
+
+        RenderNodeRef ref;
+        strncpy(ref.id, id, sizeof(ref.id) - 1);
+        ref.obj = obj;
+        ref.x = frame.x;
+        ref.y = frame.y;
+        ref.w = w;
+        ref.h = h;
+        ref.scaleX = read_float(node["scaleX"], 1.0f);
+        ref.scaleY = read_float(node["scaleY"], 1.0f);
+        ref.rotation = read_float(node["rotation"], 0.0f);
+        ref.opacity = read_float(node["opacity"], 1.0f);
+        _render_nodes.push_back(ref);
     }
 
     _render_active = true;
@@ -868,6 +923,132 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
     if (_status_dot) lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
     if (_main_label) lv_label_set_text(_main_label, "");
     if (_log_label) lv_label_set_text(_log_label, "");
+}
+
+bool AppRemoteAgent::startRenderAnimation(ArduinoJson::JsonDocument& doc, const char* requestId)
+{
+    if (!_render_active || !_render_root) {
+        sendError(requestId, "render scene required");
+        return false;
+    }
+
+    auto tracks = doc["tracks"].as<ArduinoJson::JsonArray>();
+    if (tracks.isNull() || tracks.size() == 0 || tracks.size() > 32) {
+        sendError(requestId, "animation tracks required");
+        return false;
+    }
+
+    std::vector<RenderTrack> next_tracks;
+    uint32_t duration = 0;
+    for (auto track_doc : tracks) {
+        const char* target = track_doc["target"] | "";
+        const char* property = track_doc["property"] | "";
+        auto keyframes = track_doc["keyframes"].as<ArduinoJson::JsonArray>();
+        if (!target[0] || !property[0] || keyframes.isNull() || keyframes.size() == 0 || keyframes.size() > 64) {
+            sendError(requestId, "invalid animation track");
+            return false;
+        }
+        if (!find_render_node(_render_nodes, target)) {
+            sendError(requestId, "unknown animation target");
+            return false;
+        }
+        if (strcmp(property, "x") != 0 && strcmp(property, "y") != 0 && strcmp(property, "scaleX") != 0 &&
+            strcmp(property, "scaleY") != 0 && strcmp(property, "rotation") != 0 && strcmp(property, "opacity") != 0) {
+            sendError(requestId, "unknown animation property");
+            return false;
+        }
+
+        RenderTrack track;
+        strncpy(track.target, target, sizeof(track.target) - 1);
+        strncpy(track.property, property, sizeof(track.property) - 1);
+        for (auto keyframe_doc : keyframes) {
+            RenderKeyframe keyframe;
+            keyframe.t = keyframe_doc["t"].is<int>() ? std::max(0, keyframe_doc["t"].as<int>()) : 0;
+            keyframe.value = read_float(keyframe_doc["value"], 0.0f);
+            duration = std::max(duration, keyframe.t);
+            track.keyframes.push_back(keyframe);
+        }
+        std::sort(track.keyframes.begin(), track.keyframes.end(), [](const RenderKeyframe& a, const RenderKeyframe& b) {
+            return a.t < b.t;
+        });
+        next_tracks.push_back(track);
+    }
+
+    if (duration > 300000) {
+        sendError(requestId, "animation too long");
+        return false;
+    }
+
+    _render_tracks = std::move(next_tracks);
+    _render_animation_duration = duration;
+    _render_animation_loop = doc["loop"] | false;
+    _render_animation_yoyo = doc["yoyo"] | false;
+    _render_animation_started_at = GetHAL().millis();
+    _render_animation_last_frame_at = 0;
+    return true;
+}
+
+void AppRemoteAgent::stopRenderAnimation()
+{
+    _render_tracks.clear();
+    _render_animation_started_at = 0;
+    _render_animation_last_frame_at = 0;
+    _render_animation_duration = 0;
+    _render_animation_loop = false;
+    _render_animation_yoyo = false;
+}
+
+void AppRemoteAgent::updateRenderAnimation()
+{
+    if (!_render_active || _render_tracks.empty() || _render_animation_duration == 0) return;
+
+    uint32_t now = GetHAL().millis();
+    if (_render_animation_last_frame_at != 0 && now - _render_animation_last_frame_at < 33) return;
+    _render_animation_last_frame_at = now;
+
+    uint32_t elapsed = now - _render_animation_started_at;
+    if (_render_animation_loop) {
+        uint32_t cycle = _render_animation_yoyo ? _render_animation_duration * 2 : _render_animation_duration;
+        if (cycle == 0) return;
+        uint32_t cycle_t = elapsed % cycle;
+        if (_render_animation_yoyo && cycle_t > _render_animation_duration) {
+            elapsed = cycle - cycle_t;
+        } else {
+            elapsed = cycle_t;
+        }
+    } else if (elapsed > _render_animation_duration) {
+        elapsed = _render_animation_duration;
+    }
+
+    LvglLockGuard lock;
+    for (const auto& track : _render_tracks) {
+        auto* node = find_render_node(_render_nodes, track.target);
+        if (!node || !node->obj) continue;
+        float value = interpolate_keyframes(track.keyframes, elapsed);
+        if (strcmp(track.property, "x") == 0) {
+            node->x = static_cast<int>(value);
+            lv_obj_set_pos(node->obj, node->x - node->w / 2, node->y - node->h / 2);
+        } else if (strcmp(track.property, "y") == 0) {
+            node->y = static_cast<int>(value);
+            lv_obj_set_pos(node->obj, node->x - node->w / 2, node->y - node->h / 2);
+        } else if (strcmp(track.property, "scaleX") == 0) {
+            node->scaleX = value;
+            lv_obj_set_style_transform_scale_x(node->obj, static_cast<int>(value * 256.0f), 0);
+        } else if (strcmp(track.property, "scaleY") == 0) {
+            node->scaleY = value;
+            lv_obj_set_style_transform_scale_y(node->obj, static_cast<int>(value * 256.0f), 0);
+        } else if (strcmp(track.property, "rotation") == 0) {
+            node->rotation = value;
+            lv_obj_set_style_transform_rotation(node->obj, static_cast<int>(value * 10.0f), 0);
+        } else if (strcmp(track.property, "opacity") == 0) {
+            node->opacity = value;
+            lv_obj_set_style_bg_opa(node->obj, clamp_int(static_cast<int>(value * 255.0f), 0, 255), 0);
+        }
+    }
+
+    if (!_render_animation_loop && now - _render_animation_started_at >= _render_animation_duration) {
+        stopRenderAnimation();
+    }
 }
 
 void AppRemoteAgent::setStatus(const char* mode, const char* text)

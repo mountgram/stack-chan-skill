@@ -71,8 +71,10 @@ export const grumpyScene = faceScene("grumpy", [
 export const blinkAnimation: RenderAnimation = {
   animationId: "blink",
   tracks: [
-    { target: "leftEye", property: "scaleY", keyframes: [{ t: 0, value: 1 }, { t: 80, value: 0.05 }, { t: 170, value: 1 }] },
-    { target: "rightEye", property: "scaleY", keyframes: [{ t: 0, value: 1 }, { t: 80, value: 0.05 }, { t: 170, value: 1 }] },
+    { target: "leftEye", property: "scaleY", keyframes: [{ t: 0, value: 1 }, { t: 55, value: 0.01 }, { t: 125, value: 1 }] },
+    { target: "rightEye", property: "scaleY", keyframes: [{ t: 0, value: 1 }, { t: 55, value: 0.01 }, { t: 125, value: 1 }] },
+    { target: "leftPupil", property: "opacity", keyframes: [{ t: 0, value: 1 }, { t: 35, value: 0 }, { t: 95, value: 0 }, { t: 125, value: 1 }] },
+    { target: "rightPupil", property: "opacity", keyframes: [{ t: 0, value: 1 }, { t: 35, value: 0 }, { t: 95, value: 0 }, { t: 125, value: 1 }] },
   ],
 };
 
