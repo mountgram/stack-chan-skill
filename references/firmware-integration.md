@@ -37,6 +37,16 @@ From the `stack-chan-skill` skill root, run:
 
 The helper expects `assets/app_remote_agent/` and `vendor/StackChan/firmware/main/apps/` to share the same skill root.
 
+## Boot Into Remote Agent
+
+To make StackChan boot directly into `REMOTE.AGENT` while keeping the launcher installed and reachable from the home button, patch the launcher from the `stack-chan-skill` skill root:
+
+```bash
+./assets/app_remote_agent/boot-into-remote-agent.sh
+```
+
+This patch keeps `AppLauncher` installed first. On boot, the launcher still initializes and handles first-run setup, then opens the app named `REMOTE.AGENT` once. The remote app's home indicator still calls `close()`, which returns to the launcher through Mooncake's normal launcher behavior.
+
 ## Register The App
 
 In `vendor/StackChan/firmware/main/apps/apps.h`, add:
@@ -76,6 +86,7 @@ Do not commit a private LAN IP or token to reusable files.
 `AppRemoteAgent` should:
 
 - show `REMOTE.AGENT` in the launcher
+- open automatically after boot while preserving the launcher and home button path back to it
 - connect to the brain WebSocket
 - send `hello`, telemetry, tap events, audio frames, and camera frames
 - receive screen, face, look, led, speak, startAudio, stopAudio, captureImage, stop, home, and ping commands

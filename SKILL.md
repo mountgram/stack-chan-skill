@@ -41,9 +41,10 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 4. Run `scripts/patch-stackchan.sh` to add `STACKY_WS_URL` compile-time forwarding to the vendored CMakeLists.txt.
 5. Copy or link `assets/app_remote_agent/` into this skill repo's `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
 6. Register `AppRemoteAgent` in the vendored firmware app list and `main.cpp`.
-7. Build from `vendor/StackChan/firmware`, never from the repo root.
-8. Flash only after choosing the correct serial port or confirming ESP-IDF auto-detect is safe.
-9. Implement the brain server against the protocol in `references/device-protocol.md`.
+7. Run `assets/app_remote_agent/boot-into-remote-agent.sh` so StackChan opens `REMOTE.AGENT` on boot while preserving launcher/home access.
+8. Build from `vendor/StackChan/firmware`, never from the repo root.
+9. Flash only after choosing the correct serial port or confirming ESP-IDF auto-detect is safe.
+10. Implement the brain server against the protocol in `references/device-protocol.md`.
 
 ## Run Path
 
@@ -72,6 +73,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | `assets/app_remote_agent/app_remote_agent.cpp` | Thin StackChan terminal app implementation. |
 | `assets/app_remote_agent/app_remote_agent.h` | `AppRemoteAgent` declaration. |
 | `assets/app_remote_agent/link-into-stackchan.sh` | Symlink helper that links this skill's firmware asset into this skill's vendored StackChan tree. |
+| `assets/app_remote_agent/boot-into-remote-agent.sh` | Patches the vendored launcher to open `REMOTE.AGENT` on boot while preserving launcher/home access. |
 | `assets/stacky-websocket-client.ts` | Bun TypeScript device-client example covering the full WebSocket JSON and binary protocol. |
 | `scripts/patch-stackchan.sh` | Patches vendored `CMakeLists.txt` to forward `STACKY_WS_URL` from environment to compile definition. |
 | `.env.example` | Minimal env vars the firmware build derives `STACKY_WS_URL` from. |
@@ -83,6 +85,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 - `vendor/StackChan/firmware/main/apps/app_remote_agent/` contains the remote-agent app files or symlinks.
 - `apps.h` includes `app_remote_agent/app_remote_agent.h`.
 - `main.cpp` installs `std::make_unique<AppRemoteAgent>()`.
+- `AppLauncher` auto-opens `REMOTE.AGENT` on boot if `assets/app_remote_agent/boot-into-remote-agent.sh` was requested.
 - Firmware builds from `vendor/StackChan/firmware`.
 - Server exposes `/stacky/device` WebSocket and handles the documented command/event protocol.
 - Running system shows device `hello` and telemetry after opening `REMOTE.AGENT`.

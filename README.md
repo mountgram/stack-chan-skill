@@ -45,7 +45,7 @@ First, read the skill's SKILL.md and only the references needed for this setup. 
 2. Install ESP-IDF v5.5.4 into vendor/esp-idf if it is not already present.
 3. Clone the official StackChan firmware into vendor/StackChan if it is not already present.
 4. Add this skill's app_remote_agent firmware app to the local StackChan firmware.
-5. Patch and register the app as documented by the skill.
+5. Patch and register the app as documented by the skill, including booting directly into `REMOTE.AGENT` while keeping the launcher available from the home button.
 6. Create or update a Bun/TypeScript brain server in this project that can receive the robot WebSocket connection.
 7. Tell me what environment variables I need to set, without inventing secrets or hard-coding my private LAN details.
 8. Build what can be built safely.
@@ -65,10 +65,11 @@ When an agent uses this skill, it should start by making the local setup concret
 6. Run or apply the documented firmware patch so the robot app can receive the brain server WebSocket URL at build time.
 7. Link or copy `assets/app_remote_agent/` into `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
 8. Register `AppRemoteAgent` in the local StackChan firmware app list so it appears as a runnable app on the robot.
-9. Build from `vendor/StackChan/firmware`, after sourcing `vendor/esp-idf/export.sh` in the same shell.
-10. Create or update the Bun/TypeScript brain server in the user's robot brain project.
-11. Verify server health, firmware URL/token config, and device WebSocket protocol compatibility.
-12. Flash only when hardware is connected and the serial port choice is explicit.
+9. Apply `assets/app_remote_agent/boot-into-remote-agent.sh` so the launcher opens `REMOTE.AGENT` once at boot.
+10. Build from `vendor/StackChan/firmware`, after sourcing `vendor/esp-idf/export.sh` in the same shell.
+11. Create or update the Bun/TypeScript brain server in the user's robot brain project.
+12. Verify server health, firmware URL/token config, and device WebSocket protocol compatibility.
+13. Flash only when hardware is connected and the serial port choice is explicit.
 
 ## The Robot App This Skill Adds
 
@@ -115,6 +116,8 @@ Reusable robot-side firmware app files for the StackChan side of the remote-agen
 These files implement the thin robot terminal behavior: connect to the brain server over WebSocket, exchange JSON commands/events, and support device capabilities exposed by the firmware.
 
 The helper script `assets/app_remote_agent/link-into-stackchan.sh` links these source files into your local copy of the official StackChan firmware.
+
+The helper script `assets/app_remote_agent/boot-into-remote-agent.sh` patches the local launcher so StackChan boots directly into `REMOTE.AGENT`. The launcher is still installed first, and the remote app's home button still closes back to the launcher.
 
 ### `assets/stacky-websocket-client.ts`
 
