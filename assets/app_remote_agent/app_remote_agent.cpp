@@ -747,10 +747,6 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "render.defineScene") == 0) {
         logHeap("before render.defineScene");
-        if (!hasInternalSram(MIN_INTERNAL_SRAM_RENDER, "render.defineScene")) {
-            sendError(requestId, "low memory for render scene");
-            return;
-        }
         const char* sceneId = doc["sceneId"] | "";
         if (!sceneId[0]) {
             sendError(requestId, "sceneId required");
@@ -758,7 +754,10 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         }
         _render_scene_id = sceneId;
         _render_scene_json = data;
-        renderSceneJson(_render_scene_json);
+        if (!renderSceneJson(_render_scene_json)) {
+            sendError(requestId, "render scene failed");
+            return;
+        }
         logHeap("after render.defineScene");
         sendAck(requestId);
         return;
@@ -766,16 +765,15 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "render.setScene") == 0) {
         logHeap("before render.setScene");
-        if (!hasInternalSram(MIN_INTERNAL_SRAM_RENDER, "render.setScene")) {
-            sendError(requestId, "low memory for render scene");
-            return;
-        }
         const char* sceneId = doc["sceneId"] | "";
         if (_render_scene_id.empty() || _render_scene_id != sceneId) {
             sendError(requestId, "scene not defined");
             return;
         }
-        renderSceneJson(_render_scene_json);
+        if (!renderSceneJson(_render_scene_json)) {
+            sendError(requestId, "render scene failed");
+            return;
+        }
         logHeap("after render.setScene");
         sendAck(requestId);
         return;
@@ -970,14 +968,14 @@ void AppRemoteAgent::clearRenderScene()
     moveStatusChromeForeground();
 }
 
-void AppRemoteAgent::renderSceneJson(const std::string& data)
+bool AppRemoteAgent::renderSceneJson(const std::string& data)
 {
     ArduinoJson::JsonDocument doc;
     auto error = ArduinoJson::deserializeJson(doc, data);
-    if (error) return;
+    if (error) return false;
 
     auto nodes = doc["nodes"].as<ArduinoJson::JsonArray>();
-    if (nodes.isNull() || nodes.size() > 64) return;
+    if (nodes.isNull() || nodes.size() > 64) return false;
 
     LvglLockGuard lock;
     if (GetStackChan().hasAvatar()) {
@@ -991,6 +989,9 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
         _render_root = nullptr;
     }
     _render_nodes.clear();
+    _render_active = false;
+
+    if (!hasInternalSram(MIN_INTERNAL_SRAM_RENDER, "render scene")) return false;
 
     _render_root = lv_obj_create(lv_screen_active());
     lv_obj_set_size(_render_root, 320, 240);
@@ -1089,6 +1090,7 @@ void AppRemoteAgent::renderSceneJson(const std::string& data)
     _render_active = true;
     lv_obj_move_foreground(_render_root);
     moveStatusChromeForeground();
+    return true;
 }
 
 void AppRemoteAgent::moveStatusChromeForeground()
@@ -1300,11 +1302,13 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
         lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
     }
     if (_main_label) {
-        const bool show_main = mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "standby") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
+        const bool show_main = !_render_active && mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "standby") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
         lv_label_set_text(_main_label, show_main && text ? text : "");
     }
     if (_log_label) {
-        if (is_visible_status_mode(mode)) {
+        if (_render_active) {
+            lv_label_set_text(_log_label, "");
+        } else if (is_visible_status_mode(mode)) {
             lv_label_set_text(_log_label, text ? text : "");
         } else {
             lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
