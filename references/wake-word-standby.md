@@ -13,6 +13,7 @@ Use wake-word detection only as a standby trigger:
 5. On detection, firmware sends `event: "wakeWord"`.
 6. Server starts the normal conversation flow and sends `startAudio`.
 7. Firmware disables wake-word detection while listening, thinking, speaking, or streaming PCM.
+8. After `speechDone`, the next `startAudio` is acknowledged only after microphone capture is confirmed by a queued PCM frame.
 
 This keeps the server in charge of policy while the device owns the low-latency local detector.
 
@@ -122,11 +123,10 @@ Advertise wake-word support only after the local detector is real:
   "type": "hello",
   "id": "stacky-abc",
   "version": 2,
-  "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "wakeWord"],
+  "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "wakeWord", "render"],
   "wakeWord": {
     "version": 1,
-    "models": [{ "id": "stacky", "phrase": "Stacky", "source": "firmware" }],
-    "dynamicModels": false
+    "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.97, "slidingWindow": 5 }]
   }
 }
 ```
@@ -138,6 +138,8 @@ When the detector fires:
 ```
 
 The firmware should reject an unknown requested model with `error`, not silently arm a different one.
+
+When wake-word standby is enabled, do not treat the `startAudio` command as healthy until capture has actually restarted. The firmware should delay the `startAudio` ack until the first PCM frame is captured or queued, and should send an `error` if capture startup times out after playback. This guards the common restart sequence `wakeWord -> startAudio -> stopAudio -> speak -> speechDone -> startAudio`.
 
 ## Firmware Build Notes
 

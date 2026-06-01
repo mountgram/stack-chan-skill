@@ -15,6 +15,7 @@ This file tracks source material synthesized into `stack-chan-skill`.
 | Parent repo `firmware/app_remote_agent/*` | local firmware implementation | local evidence | 2026-05-20 | high | Reusable remote-agent firmware app, protocol handlers, audio, camera, UI, link script. | Private LAN URL must be parameterized; MIT SPDX preserved. | Adopted as `assets/app_remote_agent/`. |
 | Parent repo `src/device/*` and `src/server/routes.ts` | local server implementation | local evidence | 2026-05-20 | high | TypeScript command/event protocol, safety limits, WebSocket route behavior, binary audio/image framing. | Do not copy downstream app personality or private config. | Adopted for protocol and Bun starter docs. |
 | Parent repo `src/voice/*`, `src/agent/*`, and `src/server/routes.ts` | local server implementation | local evidence | 2026-05-21 | high | Full voice loop with Deepgram live STT, Deepgram streaming TTS, AI SDK tools, device command helpers, and turn coordination. | Generalize package names, routes, and architecture; omit downstream personality and private config. | Adopted for full-stack voice agent reference. |
+| Downstream stacky-pi server debug log and wake-word standby protocol report | runtime evidence | local evidence | 2026-06-01 | high | Shows wake/tap conversation works initially, then second `startAudio` after `speechDone` can ack but produce no PCM/telemetry/acks, leaving firmware on `Streaming mic...`. | Private device/network identifiers omitted; evidence generalized into firmware asset behavior and troubleshooting guidance. | Adopted for delayed `startAudio` ack, audio startup timeout, and codec transition logging. |
 
 ## Decisions
 
@@ -25,6 +26,7 @@ This file tracks source material synthesized into `stack-chan-skill`.
 5. StackChan vendor path: use this skill repo's ignored `vendor/StackChan` checkout.
 6. Firmware ownership: generic `app_remote_agent` lives in this skill repo; downstream custom brain repos should not own a separate generic firmware copy.
 7. Downstream customization boundary: personality, provider choices, tokens, local IPs, memory, and application UX stay in the downstream repo.
+8. `startAudio` ack semantics: firmware should ack only after capture is known-good, because server-side STT readiness does not prove the device microphone pipeline survived wake-word/playback transitions.
 
 ## Coverage Matrix
 
@@ -33,7 +35,7 @@ This file tracks source material synthesized into `stack-chan-skill`.
 | API surface and behavior contracts | complete | Protocol, firmware integration, and Bun starter references. |
 | Config/runtime options | complete | ESP-IDF vendor path, StackChan vendor path, `STACKY_WS_URL`, token, public base URL. |
 | Downstream use cases | complete | Blank repo setup, firmware integration, build/flash, server implementation, full voice agent, debug UI, audio/camera extensions. |
-| Known issues/workarounds | partial | Troubleshooting covers IDF, vendor paths, app registration, serial ports, malformed protocol, and audio/camera limits. |
+| Known issues/workarounds | partial | Troubleshooting covers IDF, vendor paths, app registration, serial ports, malformed protocol, audio/camera limits, and the wake-word/post-playback audio restart wedge. |
 | Version variance | partial | ESP-IDF v5.5.4 and upstream StackChan main documented; future upstream changes require maintenance. |
 | Asset template quality | partial | Firmware assets included; patch files may be added later if registration edits become automatable. |
 
@@ -67,3 +69,4 @@ Should not trigger:
 - 2026-05-20: Initial `stack-chan-skill` skill with reference-backed docs, skill-local ESP-IDF convention, and reusable firmware asset plan.
 - 2026-05-21: Added full-stack voice agent reference covering Deepgram STT/TTS, AI SDK tools, and server turn coordination.
 - 2026-05-28: Added server-driven render protocol starter, local simulator, sample emotion scenes, and firmware scene rendering support for group/circle/ellipse/rect primitives.
+- 2026-06-01: Added wake-word/post-playback audio restart wedge evidence, delayed `startAudio` ack semantics, firmware audio-start timeout, and codec transition logging.

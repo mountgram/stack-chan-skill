@@ -18,6 +18,7 @@ Read this when StackChan setup, firmware, or server integration fails.
 | Flash picks wrong serial port | Multiple USB serial devices are connected. | Inspect ports and pass `idf.py -p PORT flash`. |
 | Linux flash permission denied | User lacks serial group permission. | Add user to `dialout` or distro-equivalent group, then re-login. |
 | Camera images are too dark | Low-light scene or sensor exposure behavior. | Try `captureImage` with `enhance: true`; consider firmware sensor controls if supported. |
+| Device stays on `Streaming mic...` after `speechDone` and the next `startAudio` | Server receives `ack` for `startAudio`, then no binary PCM, no telemetry, and no later command acks. This points to firmware-side audio capture or codec transition wedging after playback, not Deepgram STT. | Use the current `app_remote_agent` asset so `startAudio` ack is delayed until a PCM frame is queued, inspect logs around wake-word disarm, `EnableInput(true)`, first `InputData(...)`, first PCM frame queued/sent, `EnableOutput(false)`, and the audio start timeout. If it still wedges after `first InputData attempt`, suspect a blocking codec/HAL call. |
 
 ## Recovery Principles
 
@@ -25,3 +26,30 @@ Read this when StackChan setup, firmware, or server integration fails.
 - Do not overwrite `sdkconfig` casually; `idf.py set-target` can reset configuration.
 - Do not flash when the serial port is ambiguous.
 - Report the exact command output for build/flash failures.
+
+## Wake-Word Audio Restart Wedge
+
+The wake-word flow exercises the codec transition more often than the old tap-only path:
+
+```text
+wake/tap -> startAudio -> stopAudio -> speak/playback -> speechDone -> startAudio
+```
+
+If the second `startAudio` after playback leaves the display at `Streaming mic...`, collect these timestamps from firmware logs before changing server code:
+
+1. received `startAudio`
+2. wake-word disarm start/end
+3. `_audio_streaming = true`
+4. capture loop sees streaming true
+5. `EnableInput(true)` start/end
+6. first `InputData(...)` attempt
+7. first successful `InputData(...)`
+8. first PCM frame queued
+9. first PCM frame sent from `sendQueuedAudioFrames`
+10. received `stopAudio`
+11. `_audio_streaming = false`
+12. `EnableInput(false)` start/end
+13. playback start/end and `EnableOutput(false)` start/end
+14. `speechDone` sent
+
+Expected fixed behavior: firmware does not ack `startAudio` until a frame is queued. On startup failure it sends `error` with `audio capture start timed out`, disables input, and returns to a recoverable status instead of staying permanently stuck.

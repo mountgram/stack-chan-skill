@@ -33,6 +33,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | Build or flash | From this skill root, source `vendor/esp-idf/export.sh`, work from `vendor/StackChan/firmware`, and use `references/firmware-build-flash.md`. |
 | Run the remote agent | Start the target app's Bun brain server, verify `/health`, verify `/stacky/device` auth config, then open `REMOTE.AGENT` on StackChan. |
 | Debug a disconnected robot | Check server bind/public URL/token first, then firmware URL, Wi-Fi, WebSocket logs, and device telemetry. |
+| Debug `Streaming mic...` after wake word or speech | Read `references/troubleshooting.md`; inspect firmware audio restart logs before changing server STT/TTS code. |
 | Change protocol or commands | Update firmware, server `device/protocol`, command helpers, and docs together. |
 | Add wake-word standby | Keep the server as policy owner, send `standby` with an optional `wakeWord`, and make firmware advertise `wakeWord` only after a real local detector is integrated. |
 

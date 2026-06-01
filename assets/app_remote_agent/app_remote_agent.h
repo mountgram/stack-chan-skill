@@ -111,11 +111,17 @@ private:
     std::atomic_bool _opened{false};
     std::atomic_bool _connected{false};
     std::atomic_bool _audio_streaming{false};
+    std::atomic_bool _audio_start_pending{false};
+    std::atomic_bool _audio_first_input_attempt_logged{false};
     std::atomic_bool _audio_playback_cancel{false};
     std::atomic_bool _tasks_stopping{false};
+    std::atomic<uint32_t> _audio_stream_started_at{0};
+    std::atomic<uint32_t> _last_audio_frame_queued_at{0};
+    std::atomic<uint32_t> _last_audio_frame_sent_at{0};
     std::atomic_int _volume{90};
     std::atomic_int _mic_audio_level{0};
     std::atomic_int _playback_audio_level{0};
+    std::atomic_int _audio_input_failures{0};
     int _current_emotion             = 0;
     int _yaw                        = 0;
     int _pitch                      = 35;
@@ -129,6 +135,7 @@ private:
     bool _pending_status_dirty      = false;
     char _pending_mode[24]          = {0};
     char _pending_text[160]         = {0};
+    char _audio_stream_request_id[64] = {0};
 
     void createUi();
     void connectWebSocket();
@@ -144,6 +151,9 @@ private:
     void sendPacket(uint8_t type, const uint8_t* data, size_t len);
     void sendAck(const char* requestId);
     void sendError(const char* requestId, const char* message);
+    void ackPendingAudioStart();
+    void failPendingAudioStart(const char* message);
+    void resetAudioStartState(const char* requestId);
     void ensureAvatar();
     void hideAvatar();
     void clearRenderScene();
@@ -158,7 +168,7 @@ private:
     bool ensureWakeWordDetector();
     void disarmWakeWord(uint32_t wait_ms = 0);
     void handleWakeWordDetected(const std::string& wake_word);
-    void captureAndSendAudioFrame();
+    bool captureAndSendAudioFrame();
     void captureAndSendCameraImage(const char* requestId, bool enhance);
     bool queueAudioPlayback(const char* requestId, const char* url);
     void audioPlaybackLoop();

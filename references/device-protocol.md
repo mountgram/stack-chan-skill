@@ -12,8 +12,8 @@ Read this when implementing firmware or server messages.
 ## Device To Server JSON
 
 ```json
-{ "type": "hello", "id": "stacky-abc", "version": 1, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "standby"] }
-{ "type": "hello", "id": "stacky-abc", "version": 1, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "standby", "wakeWord"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "source": "firmware" }], "dynamicModels": false } }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "render"] }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.97, "slidingWindow": 5 }] } }
 { "type": "telemetry", "battery": 82, "charging": true, "wifiRssi": -55, "pose": { "yaw": 0, "pitch": 35 } }
 { "type": "event", "event": "tap", "at": 123456 }
 { "type": "event", "event": "wakeWord", "wakeWord": "Stacky", "modelId": "stacky", "score": 0.98, "at": 123456 }
@@ -46,7 +46,7 @@ Read this when implementing firmware or server messages.
 - Firmware should reject malformed JSON with an error, not crash.
 - Server clamps values before sending; firmware clamps again before touching hardware.
 - Firmware can no-op unsupported commands with `ack` only when that is safer than erroring.
-- `startAudio` means stream microphone PCM to the server for STT.
+- `startAudio` means stream microphone PCM to the server for STT. Firmware should acknowledge it only after mic input is enabled and at least one PCM frame has been captured/queued; if startup fails or no frame is produced within about 2 seconds, send `error` for that `requestId` and stop streaming.
 - `standby` means stop full-audio streaming and enter the server-selected idle mode.
 - Firmware must advertise `wakeWord` only when it can run a local detector. If `wakeWord` is absent, the server should use tap-only standby.
 - A local detector sends `wakeWord` when it fires; the server then starts a normal STT conversation with `startAudio`.
@@ -88,3 +88,15 @@ Camera metadata example:
 Wake-word standby is intentionally server-selected. The firmware exposes capability, available models, and whether dynamic model download is supported. The server decides whether to arm a wake word, which phrase/model to use, or to fall back to tap-only standby.
 
 The default desired phrase is `Stacky`. A custom phrase requires a matching microWakeWord model; changing the text alone does not create a usable detector.
+
+## Audio Startup Semantics
+
+Treat `startAudio` ack as "mic is actually streaming," not merely "command accepted." The robust sequence is:
+
+1. Server sends `{ "type": "startAudio", "requestId": "cmd-123" }`.
+2. Firmware disarms wake-word detection and requests capture startup.
+3. Capture task enables codec input and attempts `InputData(...)`.
+4. Firmware sends `{ "type": "ack", "requestId": "cmd-123", "ok": true }` only after the first PCM frame is captured or queued.
+5. If no PCM frame is produced within about 2 seconds, firmware disables input, stops streaming, and sends `{ "type": "error", "requestId": "cmd-123", "message": "audio capture start timed out" }`.
+
+This distinguishes command acceptance from a healthy audio pipeline, especially after `speechDone` when the server immediately starts the next listening turn.

@@ -20,6 +20,7 @@ In scope:
 - Describing a minimal Bun TypeScript brain server shape.
 - Describing a full-stack voice agent server with Deepgram STT/TTS, TypeScript, AI SDK tools, and StackChan device control.
 - Providing a server-driven render protocol starter with local simulator and simple device-side scene rendering.
+- Capturing wake-word standby audio restart failure modes and firmware-side recovery expectations.
 
 Out of scope:
 - Downstream robot personality prompts.
@@ -99,6 +100,7 @@ Data that must not be stored:
 
 - The starter firmware app depends on upstream StackChan firmware APIs and may require small patches if upstream layout changes.
 - Camera, audio, and servo behavior depend on StackChan firmware internals and hardware state.
+- Audio capture can still wedge inside a blocking upstream codec/HAL call; the firmware asset logs the blocking boundary and fails fast when the task remains responsive.
 - Flashing cannot be fully validated without hardware and the correct serial port.
 
 ## Maintenance Notes
