@@ -17,6 +17,7 @@
 #include <freertos/task.h>
 
 class WebSocket;
+class StackyWakeWordDetector;
 typedef struct _lv_obj_t lv_obj_t;
 
 class AppRemoteAgent : public mooncake::AppAbility {
@@ -91,6 +92,7 @@ public:
 private:
 
     std::unique_ptr<WebSocket> _websocket;
+    std::unique_ptr<StackyWakeWordDetector> _wake_word_detector;
     std::mutex _mutex;
     std::mutex _send_mutex;
     std::queue<ReceivedMessage> _messages;
@@ -153,6 +155,9 @@ private:
     void setStatus(const char* mode, const char* text);
     void queueStatus(const char* mode, const char* text);
     void setLog(const char* text);
+    bool ensureWakeWordDetector();
+    void disarmWakeWord(uint32_t wait_ms = 0);
+    void handleWakeWordDetected(const std::string& wake_word);
     void captureAndSendAudioFrame();
     void captureAndSendCameraImage(const char* requestId, bool enhance);
     bool queueAudioPlayback(const char* requestId, const char* url);

@@ -25,11 +25,18 @@ if [[ -L "$link_path" ]]; then
   rm -f "$link_path"
   mkdir -p "$link_path"
 elif [[ -e "$link_path" ]]; then
-  rm -f "$link_path/app_remote_agent.cpp" "$link_path/app_remote_agent.h"
+  rm -f "$link_path/app_remote_agent.cpp" \
+        "$link_path/app_remote_agent.h" \
+        "$link_path/stacky_wake_word.cpp" \
+        "$link_path/stacky_wake_word.h" \
+        "$link_path/stacky_wake_word_model.h"
 else
   mkdir -p "$link_path"
 fi
 
 ln -s "$app_dir/app_remote_agent.cpp" "$link_path/app_remote_agent.cpp"
 ln -s "$app_dir/app_remote_agent.h" "$link_path/app_remote_agent.h"
+ln -s "$app_dir/stacky_wake_word.cpp" "$link_path/stacky_wake_word.cpp"
+ln -s "$app_dir/stacky_wake_word.h" "$link_path/stacky_wake_word.h"
+ln -s "$app_dir/stacky_wake_word_model.h" "$link_path/stacky_wake_word_model.h"
 echo "Linked app_remote_agent sources into $link_path"

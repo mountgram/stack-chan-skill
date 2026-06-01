@@ -49,6 +49,7 @@ This creates:
   run.sh
   scripts/download_backgrounds.py
   scripts/generate_features.py
+  scripts/generate_local_negatives.py
   scripts/write_manifest.py
 ```
 
@@ -59,11 +60,16 @@ Run order inside the generated workspace:
 ./run.sh preview
 ./run.sh generate
 ./run.sh backgrounds
-./run.sh negatives
+./run.sh local-negatives
 ./run.sh features
 ./run.sh train
 ./run.sh manifest
 ```
+
+`local-negatives` builds a compact negative dataset from downloaded AudioSet
+clips. The generated workspace also keeps `negatives` for OHF's larger
+pre-generated Hugging Face negative corpora, but that path requires much more
+disk space.
 
 The final model package is:
 
@@ -133,6 +139,22 @@ When the detector fires:
 
 The firmware should reject an unknown requested model with `error`, not silently arm a different one.
 
+## Firmware Build Notes
+
+`REMOTE.AGENT` uses ESP-IDF managed components for the standalone
+microWakeWord runtime. The first firmware build fetches those dependencies
+under `vendor/StackChan/firmware/managed_components`.
+
+After that first dependency fetch, run:
+
+```bash
+bash .agents/skills/stack-chan-skill/scripts/patch-micro-wake-word-component.sh
+```
+
+This applies the local compatibility fixes needed by the current managed
+component with ESP-IDF 5.5: the ROM CRC include moved, and CMake must expose
+the TensorFlow Lite Micro and ESPMicroSpeechFeatures component dependencies.
+
 ## Model Policy
 
 `Stacky` is the default desired phrase. It still needs a trained microWakeWord model whose manifest phrase and model id match what the server asks for.
@@ -146,9 +168,7 @@ When a user asks to update the wake word:
 1. Create or refresh the wake-word workspace with `scripts/create-wake-word-workspace.sh`.
 2. Run `./run.sh preview` and have the user confirm the generated phrase sounds right before long training.
 3. Run the remaining generated commands through `manifest`.
-4. Copy `dist/<id>.tflite` and `dist/<id>.json` into the firmware model packaging path used by the remote-agent microWakeWord runner.
+4. Convert `dist/<id>.tflite` to the firmware model header used by the remote-agent microWakeWord runner.
 5. Update server env: `STACKY_WAKE_WORD_PHRASE`, `STACKY_WAKE_WORD_MODEL_ID`, and optional `STACKY_WAKE_WORD_MODEL_URL`.
 6. Build and flash from `vendor/StackChan/firmware` using `references/firmware-build-flash.md`.
 7. Verify `/health`, device `hello` advertises `standby` and `wakeWord`, then say the phrase and confirm the server receives `event: "wakeWord"` and sends `startAudio`.
-
-Current boundary: the reusable `app_remote_agent` now has the server-driven `standby` protocol, but it still needs a real microWakeWord TFLite Micro runner before it may advertise `wakeWord`. Do not mark the flash workflow complete until that firmware runner exists and detects the trained model on hardware.

@@ -153,7 +153,7 @@ PIPER_SLERP_WEIGHTS="0.5"
 # Manifest defaults. Adjust after validation.
 WAKE_WORD_PROBABILITY_CUTOFF=0.97
 WAKE_WORD_SLIDING_WINDOW_SIZE=5
-WAKE_WORD_TENSOR_ARENA_SIZE=26080
+WAKE_WORD_TENSOR_ARENA_SIZE=40000
 WAKE_WORD_AUTHOR=StackChan
 EOF
 
@@ -167,29 +167,11 @@ features:
     truth: true
     truncation_strategy: truncate_start
     type: mmap
-  - features_dir: negative_datasets/speech
+  - features_dir: negative_datasets/local
     sampling_weight: 10.0
     penalty_weight: 1.0
     truth: false
     truncation_strategy: random
-    type: mmap
-  - features_dir: negative_datasets/dinner_party
-    sampling_weight: 10.0
-    penalty_weight: 1.0
-    truth: false
-    truncation_strategy: random
-    type: mmap
-  - features_dir: negative_datasets/no_speech
-    sampling_weight: 5.0
-    penalty_weight: 1.0
-    truth: false
-    truncation_strategy: random
-    type: mmap
-  - features_dir: negative_datasets/dinner_party_eval
-    sampling_weight: 0.0
-    penalty_weight: 1.0
-    truth: false
-    truncation_strategy: split
     type: mmap
 training_steps:
   - 10000
@@ -224,6 +206,13 @@ from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
 
+impulse_paths = [str(path) for path in (Path("mit_rirs"),) if any(path.glob("*.wav"))]
+background_paths = [
+    str(path)
+    for path in (Path("fma_16k"), Path("audioset_16k"))
+    if any(path.glob("*.wav"))
+]
+
 clips = Clips(
     input_directory="generated_samples",
     file_pattern="*.wav",
@@ -245,8 +234,8 @@ augmenter = Augmentation(
         "Gain": 1.0,
         "RIR": 0.5,
     },
-    impulse_paths=["mit_rirs"],
-    background_paths=["fma_16k", "audioset_16k"],
+    impulse_paths=impulse_paths,
+    background_paths=background_paths,
     background_min_snr_db=-5,
     background_max_snr_db=10,
     min_jitter_s=0.195,
@@ -284,14 +273,56 @@ for split in ("training", "validation", "testing"):
     )
 EOF
 
+write_file "$scripts_dir/generate_local_negatives.py" <<'EOF'
+#!/usr/bin/env python3
+from pathlib import Path
+
+from mmap_ninja.ragged import RaggedMmap
+from microwakeword.audio.clips import Clips
+from microwakeword.audio.spectrograms import SpectrogramGeneration
+
+clips = Clips(
+    input_directory="audioset_16k",
+    file_pattern="*.wav",
+    min_clip_duration_s=3.5,
+    random_split_seed=11,
+    split_count=0.1,
+)
+
+output_root = Path("negative_datasets/local")
+output_root.mkdir(parents=True, exist_ok=True)
+
+for split in ("training", "validation", "testing"):
+    split_name = "train"
+    if split == "validation":
+        split_name = "validation"
+    elif split == "testing":
+        split_name = "test"
+
+    out_dir = output_root / split
+    out_dir.mkdir(parents=True, exist_ok=True)
+    spectrograms = SpectrogramGeneration(
+        clips=clips,
+        step_ms=10,
+        split_spectrogram_duration_s=3.2,
+    )
+    RaggedMmap.from_generator(
+        out_dir=str(out_dir / "background_mmap"),
+        sample_generator=spectrograms.spectrogram_generator(split=split_name),
+        batch_size=100,
+        verbose=True,
+    )
+EOF
+
 write_file "$scripts_dir/download_backgrounds.py" <<'EOF'
 #!/usr/bin/env python3
 import tarfile
-import urllib.request
+import subprocess
 import zipfile
 from pathlib import Path
 
 import datasets
+import librosa
 import numpy as np
 import scipy.io.wavfile
 from tqdm import tqdm
@@ -301,27 +332,32 @@ def download(url: str, path: Path) -> None:
     if path.exists():
         return
     print(f"download {url}")
-    urllib.request.urlretrieve(url, path)
+    subprocess.run(["curl", "-L", "--retry", "5", "--fail", url, "-o", str(path)], check=True)
 
 def write_wav(path: Path, sample_rate: int, audio: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     scipy.io.wavfile.write(path, sample_rate, (audio * 32767).astype(np.int16))
 
+def decoder_audio(decoder):
+    samples = decoder.get_all_samples()
+    audio = samples.data.squeeze().numpy()
+    return samples.sample_rate, audio
+
 rir_dir = Path("mit_rirs")
-if not rir_dir.exists():
-    rir_dir.mkdir()
+if not any(rir_dir.glob("*.wav")):
+    rir_dir.mkdir(exist_ok=True)
     rir_dataset = datasets.load_dataset(
         "davidscripka/MIT_environmental_impulse_responses",
         split="train",
         streaming=True,
     )
-    for row in tqdm(rir_dataset, desc="MIT RIR"):
-        name = Path(row["audio"]["path"]).name
-        write_wav(rir_dir / name, 16000, row["audio"]["array"])
+    for index, row in enumerate(tqdm(rir_dataset, desc="MIT RIR")):
+        sample_rate, audio = decoder_audio(row["audio"])
+        write_wav(rir_dir / f"rir_{index:05d}.wav", sample_rate, audio)
 
 audioset_tar = Path("audioset/bal_train09.tar")
 download(
-    "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/main/data/bal_train09.tar",
+    "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/196c0900867eff791b8f4d4be57db277e9a5b131/bal_train09.tar",
     audioset_tar,
 )
 audioset_audio_dir = Path("audioset/audio")
@@ -330,15 +366,12 @@ if not audioset_audio_dir.exists():
         tar.extractall("audioset")
 
 audioset_out = Path("audioset_16k")
-if not audioset_out.exists():
-    audioset_out.mkdir()
-    audioset_dataset = datasets.Dataset.from_dict(
-        {"audio": [str(i) for i in audioset_audio_dir.glob("**/*.flac")]}
-    )
-    audioset_dataset = audioset_dataset.cast_column("audio", datasets.Audio(sampling_rate=16000))
-    for row in tqdm(audioset_dataset, desc="AudioSet 16k"):
-        name = Path(row["audio"]["path"]).with_suffix(".wav").name
-        write_wav(audioset_out / name, 16000, row["audio"]["array"])
+if not any(audioset_out.glob("*.wav")):
+    audioset_out.mkdir(exist_ok=True)
+    audioset_files = sorted(audioset_audio_dir.glob("**/*.flac"))
+    for path in tqdm(audioset_files, desc="AudioSet 16k"):
+        audio, sample_rate = librosa.load(path, sr=16000, mono=True)
+        write_wav(audioset_out / path.with_suffix(".wav").name, sample_rate, audio)
 
 fma_zip = Path("fma/fma_xs.zip")
 download("https://huggingface.co/datasets/mchl914/fma_xsmall/resolve/main/fma_xs.zip", fma_zip)
@@ -348,15 +381,12 @@ if not fma_audio_dir.exists():
         zf.extractall("fma")
 
 fma_out = Path("fma_16k")
-if not fma_out.exists():
-    fma_out.mkdir()
-    fma_dataset = datasets.Dataset.from_dict(
-        {"audio": [str(i) for i in fma_audio_dir.glob("**/*.mp3")]}
-    )
-    fma_dataset = fma_dataset.cast_column("audio", datasets.Audio(sampling_rate=16000))
-    for row in tqdm(fma_dataset, desc="FMA 16k"):
-        name = Path(row["audio"]["path"]).with_suffix(".wav").name
-        write_wav(fma_out / name, 16000, row["audio"]["array"])
+if not any(fma_out.glob("*.wav")):
+    fma_out.mkdir(exist_ok=True)
+    fma_files = sorted(fma_audio_dir.glob("**/*.mp3"))
+    for path in tqdm(fma_files, desc="FMA 16k"):
+        audio, sample_rate = librosa.load(path, sr=16000, mono=True)
+        write_wav(fma_out / path.with_suffix(".wav").name, sample_rate, audio)
 EOF
 
 write_file "$scripts_dir/write_manifest.py" <<'EOF'
@@ -370,7 +400,7 @@ model_id = os.environ["WAKE_WORD_MODEL_ID"]
 author = os.environ.get("WAKE_WORD_AUTHOR", "StackChan")
 cutoff = float(os.environ.get("WAKE_WORD_PROBABILITY_CUTOFF", "0.97"))
 window = int(os.environ.get("WAKE_WORD_SLIDING_WINDOW_SIZE", "5"))
-arena = int(os.environ.get("WAKE_WORD_TENSOR_ARENA_SIZE", "26080"))
+arena = int(os.environ.get("WAKE_WORD_TENSOR_ARENA_SIZE", "40000"))
 
 model_path = Path("trained_models") / model_id / "tflite_stream_state_internal_quant" / "stream_state_internal_quant.tflite"
 out_dir = Path("dist")
@@ -407,7 +437,9 @@ write_file "$workspace/run.sh" <<'EOF'
 set -euo pipefail
 
 cd "$(dirname "$0")"
+set -a
 source ./wake-word.env
+set +a
 
 cmd="${1:-help}"
 
@@ -415,13 +447,72 @@ install_python_deps() {
     python3 -m pip install --upgrade pip
     python3 -m pip install \
         "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f" \
-        datasets scipy numpy tqdm mmap_ninja pyyaml torch torchaudio piper-phonemize-cross==1.2.1
+        datasets scipy numpy tqdm mmap_ninja pyyaml torch torchaudio torchcodec tensorboard piper-phonemize-cross==1.2.1
     if [[ "$(uname -s)" == "Darwin" ]]; then
         python3 -m pip install 'git+https://github.com/puddly/pymicro-features@puddly/minimum-cpp-version'
     fi
     if [[ ! -d microWakeWord ]]; then
         git clone https://github.com/OHF-Voice/micro-wake-word microWakeWord
     fi
+    python3 - <<'PY'
+from pathlib import Path
+path = Path("microWakeWord/microwakeword/audio/clips.py")
+text = path.read_text(encoding="utf-8")
+if "def _audio_array(audio):" not in text:
+    text = text.replace(
+        "from microwakeword.audio.audio_utils import remove_silence_webrtc\n\n\nclass Clips:",
+        "from microwakeword.audio.audio_utils import remove_silence_webrtc\n\n\n"
+        "def _audio_array(audio):\n"
+        "    if hasattr(audio, \"get_all_samples\"):\n"
+        "        return audio.get_all_samples().data.squeeze().numpy()\n"
+        "    return audio[\"array\"]\n\n\n"
+        "class Clips:",
+    )
+    text = text.replace('clip_audio = clip["audio"]["array"]', 'clip_audio = _audio_array(clip["audio"])')
+    text = text.replace('clip_audio = rand_audio_entry["audio"]["array"]', 'clip_audio = _audio_array(rand_audio_entry["audio"])')
+    path.write_text(text, encoding="utf-8")
+PY
+    python3 - <<'PY'
+from pathlib import Path
+path = Path("microWakeWord/microwakeword/audio/audio_utils.py")
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "frontend_result = micro_frontend.process_samples(\n"
+    "                audio_samples[audio_idx : audio_idx + 160 * 2]\n"
+    "            )",
+    "process_samples = getattr(\n"
+    "                micro_frontend, \"process_samples\", micro_frontend.ProcessSamples\n"
+    "            )\n"
+    "            frontend_result = process_samples(\n"
+    "                audio_samples[audio_idx : audio_idx + 160 * 2]\n"
+    "            )",
+)
+path.write_text(text, encoding="utf-8")
+PY
+    python3 - <<'PY'
+from pathlib import Path
+path = Path("microWakeWord/microwakeword/train.py")
+text = path.read_text(encoding="utf-8")
+if "def _metric_value(value):" not in text:
+    text = text.replace(
+        "\ndef validate_nonstreaming(config, data_processor, model, test_set):",
+        "\n\ndef _metric_value(value):\n"
+        "    return value.numpy() if hasattr(value, \"numpy\") else value\n"
+        "\n\ndef validate_nonstreaming(config, data_processor, model, test_set):",
+    )
+text = text.replace('result["fp"].numpy()', '_metric_value(result["fp"])')
+text = text.replace('ambient_predictions["tp"].numpy()', '_metric_value(ambient_predictions["tp"])')
+text = text.replace('ambient_predictions["fp"].numpy()', '_metric_value(ambient_predictions["fp"])')
+text = text.replace('ambient_predictions["fn"].numpy()', '_metric_value(ambient_predictions["fn"])')
+path.write_text(text, encoding="utf-8")
+PY
+    python3 - <<'PY'
+from pathlib import Path
+path = Path("microWakeWord/microwakeword/test.py")
+text = path.read_text(encoding="utf-8")
+text = text.replace("np.trapz(", "np.trapezoid(")
+path.write_text(text, encoding="utf-8")
+PY
     python3 -m pip install -e ./microWakeWord
     if [[ ! -d piper-sample-generator ]]; then
         if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -430,6 +521,13 @@ install_python_deps() {
             git clone https://github.com/rhasspy/piper-sample-generator
         fi
     fi
+    python3 - <<'PY'
+from pathlib import Path
+path = Path("piper-sample-generator/generate_samples.py")
+text = path.read_text(encoding="utf-8")
+text = text.replace("torch.load(model_path)", "torch.load(model_path, weights_only=False)")
+path.write_text(text, encoding="utf-8")
+PY
 }
 
 download_piper_model() {
@@ -439,6 +537,9 @@ download_piper_model() {
     fi
     if [[ ! -f "$PIPER_GENERATOR_MODEL.json" ]]; then
         curl -L "$PIPER_GENERATOR_CONFIG_URL" -o "$PIPER_GENERATOR_MODEL.json"
+    fi
+    if [[ ! -s "$PIPER_GENERATOR_MODEL.json" || "$(wc -c < "$PIPER_GENERATOR_MODEL.json")" -lt 100 ]]; then
+        cp "piper-sample-generator/models/$(basename "$PIPER_GENERATOR_MODEL").json" "$PIPER_GENERATOR_MODEL.json"
     fi
 }
 
@@ -482,6 +583,7 @@ Commands:
   backgrounds Download RIR/noise/music audio used for positive sample augmentation.
   features    Convert generated samples to augmented microWakeWord features.
   negatives   Download pre-generated negative feature datasets from Hugging Face.
+  local-negatives Generate compact negative features from downloaded AudioSet audio.
   train       Train and quantize the microWakeWord model.
   manifest    Copy the trained .tflite and write dist/${WAKE_WORD_MODEL_ID}.json.
 
@@ -490,7 +592,7 @@ Run order:
   ./run.sh preview
   ./run.sh generate
   ./run.sh backgrounds
-  ./run.sh negatives
+  ./run.sh local-negatives
   ./run.sh features
   ./run.sh train
   ./run.sh manifest
@@ -518,6 +620,9 @@ USAGE
         ;;
     features)
         python3 scripts/generate_features.py
+        ;;
+    local-negatives)
+        python3 scripts/generate_local_negatives.py
         ;;
     train)
         python3 -m microwakeword.model_train_eval \
@@ -562,7 +667,7 @@ cd "$workspace"
 ./run.sh preview
 ./run.sh generate
 ./run.sh backgrounds
-./run.sh negatives
+./run.sh local-negatives
 ./run.sh features
 ./run.sh train
 ./run.sh manifest
@@ -586,7 +691,7 @@ If the generated preview sounds wrong, recreate this workspace with
 \`--phoneme\` and tune the Piper controls in \`wake-word.env\`.
 EOF
 
-chmod +x "$workspace/run.sh" "$scripts_dir/generate_features.py" "$scripts_dir/download_backgrounds.py" "$scripts_dir/write_manifest.py"
+chmod +x "$workspace/run.sh" "$scripts_dir/generate_features.py" "$scripts_dir/generate_local_negatives.py" "$scripts_dir/download_backgrounds.py" "$scripts_dir/write_manifest.py"
 
 echo "Created wake-word workspace: $workspace"
 echo "Next:"

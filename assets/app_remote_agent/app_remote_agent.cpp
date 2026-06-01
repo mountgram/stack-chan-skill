@@ -3,6 +3,8 @@
  */
 #include "app_remote_agent.h"
 
+#include "stacky_wake_word.h"
+
 #include <ArduinoJson.hpp>
 #include <apps/common/common.h>
 #include <assets/assets.h>
@@ -26,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #ifndef STACKY_WS_URL
 #define STACKY_WS_URL "ws://STACKY_BRAIN_HOST:6001/stacky/device?token=dev-token-change-me"
@@ -329,6 +332,7 @@ void AppRemoteAgent::connectWebSocket()
 
     _websocket->OnDisconnected([this]() {
         _connected = false;
+        disarmWakeWord(500);
         setStatus("offline", "Disconnected");
     });
 
@@ -549,6 +553,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             sendError(requestId, "audio codec unavailable");
             return;
         }
+        disarmWakeWord(500);
         _audio_streaming = true;
         setStatus("listening", "Streaming mic...");
         sendAck(requestId);
@@ -558,6 +563,21 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     if (strcmp(type, "standby") == 0) {
         const char* text = doc["text"] | "Standby. Tap to talk.";
         _audio_streaming = false;
+        if (doc["wakeWord"].is<ArduinoJson::JsonObject>()) {
+            ArduinoJson::JsonObject wake_word = doc["wakeWord"].as<ArduinoJson::JsonObject>();
+            const char* model_id                   = wake_word["modelId"] | "";
+            const char* phrase                     = wake_word["phrase"] | "Stacky";
+            if (strcmp(model_id, "stacky") != 0 || strcmp(phrase, "Stacky") != 0) {
+                sendError(requestId, "wake word model unavailable");
+                return;
+            }
+            if (!ensureWakeWordDetector() || !_wake_word_detector->arm()) {
+                sendError(requestId, "wake word detector unavailable");
+                return;
+            }
+        } else {
+            disarmWakeWord(500);
+        }
         setStatus("standby", text);
         sendAck(requestId);
         return;
@@ -756,10 +776,17 @@ void AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
 void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
-    char buffer[1024];
-    snprintf(buffer, sizeof(buffer),
-             R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
-             id.c_str());
+    const bool wake_word_ready = ensureWakeWordDetector();
+    char buffer[1400];
+    if (wake_word_ready) {
+        snprintf(buffer, sizeof(buffer),
+                 R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.97,"slidingWindow":5}]},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+                 id.c_str());
+    } else {
+        snprintf(buffer, sizeof(buffer),
+                 R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+                 id.c_str());
+    }
     sendJson(buffer);
 }
 
@@ -1193,9 +1220,41 @@ void AppRemoteAgent::setLog(const char* text)
 
 void AppRemoteAgent::handleTap()
 {
+    disarmWakeWord(500);
     setLog("tap sent to brain");
     char buffer[96];
     snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"tap","at":%lu})", (unsigned long)GetHAL().millis());
+    sendJson(buffer);
+}
+
+bool AppRemoteAgent::ensureWakeWordDetector()
+{
+    if (_wake_word_detector) {
+        return true;
+    }
+
+    auto detector = std::make_unique<StackyWakeWordDetector>();
+    if (!detector->begin([this](const std::string& wake_word) { handleWakeWordDetected(wake_word); })) {
+        return false;
+    }
+    _wake_word_detector = std::move(detector);
+    return true;
+}
+
+void AppRemoteAgent::disarmWakeWord(uint32_t wait_ms)
+{
+    if (_wake_word_detector) {
+        _wake_word_detector->disarm(wait_ms);
+    }
+}
+
+void AppRemoteAgent::handleWakeWordDetected(const std::string& wake_word)
+{
+    _audio_streaming = false;
+    queueStatus("listening", "Wake word heard");
+    char buffer[192];
+    snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"wakeWord","wakeWord":"%s","modelId":"stacky","at":%lu})",
+             wake_word.c_str(), (unsigned long)GetHAL().millis());
     sendJson(buffer);
 }
 
@@ -1440,6 +1499,10 @@ void AppRemoteAgent::onClose()
 {
     mclog::tagInfo(TAG, "on close");
     _opened = false;
+    if (_wake_word_detector) {
+        _wake_word_detector->shutdown();
+        _wake_word_detector.reset();
+    }
     stopAudioTasks();
     _audio_streaming = false;
     _websocket.reset();
