@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-01T09:12:47Z",
+  "title": "Design System: StackChan Skill",
+  "extensions": {
+    "colorMeta": {
+      "accent-green": {
+        "role": "primary",
+        "displayName": "Workbench Action Green",
+        "canonical": "#35d0a4",
+        "tonalRamp": ["#03100c", "#0b2d24", "#145442", "#1f8064", "#35d0a4", "#75e2c5", "#b7f2e3", "#e9fff8"]
+      },
+      "status-cyan": {
+        "role": "secondary",
+        "displayName": "Signal Cyan",
+        "canonical": "#9fd7ff",
+        "tonalRamp": ["#07131c", "#10283a", "#1d4663", "#39719d", "#6eb3e6", "#9fd7ff", "#c8e9ff", "#eef8ff"]
+      },
+      "stacky-cheek": {
+        "role": "secondary",
+        "displayName": "Stacky Cheek Pink",
+        "canonical": "#ff9eb5",
+        "tonalRamp": ["#22070d", "#4a1420", "#7c283a", "#b64861", "#e87592", "#ff9eb5", "#ffc8d5", "#fff0f4"]
+      },
+      "console-bg": {
+        "role": "neutral",
+        "displayName": "Console Background",
+        "canonical": "#080a10",
+        "tonalRamp": ["#000000", "#05070d", "#080a10", "#0d1220", "#1d2738", "#61708a", "#9aa8ba", "#e8f3ff"]
+      },
+      "panel-bottom": {
+        "role": "neutral",
+        "displayName": "Layered Panel Bottom",
+        "canonical": "#0d1220",
+        "tonalRamp": ["#000000", "#05070d", "#0d1220", "#111827", "#223047", "#334155", "#61708a", "#e8f3ff"]
+      }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "Tool title and rare top-level labels." },
+      "title": { "displayName": "Title", "purpose": "Section labels for controls, JSON, presets, and output." },
+      "body": { "displayName": "Body", "purpose": "Dense JSON, logs, protocol text, and helper copy." },
+      "label": { "displayName": "Label", "purpose": "Buttons and decisive controls." }
+    },
+    "shadows": [
+      { "name": "panel-depth", "value": "0 18px 60px #0008", "purpose": "Lift substantial work areas from the console background." },
+      { "name": "device-stage", "value": "inset 0 0 0 1px #61708a, 0 28px 70px #000a", "purpose": "Make the simulator preview read as a physical device frame." }
+    ],
+    "motion": [
+      { "name": "state-fast", "value": "150ms ease-out", "purpose": "Fast hover, focus, and state feedback for tooling controls." }
+    ],
+    "breakpoints": [
+      { "name": "simulator-stack", "value": "980px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Concrete command button for actions that render, play, or send data.",
+      "html": "<button class=\"ds-btn-primary\">Render</button>",
+      "css": ".ds-btn-primary { border: 0; background: #35d0a4; color: #03100c; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 800; cursor: pointer; transition: transform 150ms ease-out, filter 150ms ease-out; } .ds-btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); } .ds-btn-primary:focus-visible { outline: 2px solid #9fd7ff; outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Quiet control for preset loading, toggles, and reset actions.",
+      "html": "<button class=\"ds-btn-secondary\">Load Preset</button>",
+      "css": ".ds-btn-secondary { border: 0; background: #26344f; color: #e8f3ff; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 800; cursor: pointer; transition: background 150ms ease-out, transform 150ms ease-out; } .ds-btn-secondary:hover { background: #334155; transform: translateY(-1px); } .ds-btn-secondary:focus-visible { outline: 2px solid #9fd7ff; outline-offset: 2px; }"
+    },
+    {
+      "name": "Workbench Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Layered dark container for controls, editors, logs, or preview areas.",
+      "html": "<section class=\"ds-panel\"><h2>Scene JSON</h2><p>Device commands and output stay inside structured work areas.</p></section>",
+      "css": ".ds-panel { border: 1px solid #223047; background: linear-gradient(180deg, #111827, #0d1220); border-radius: 16px; padding: 16px; box-shadow: 0 18px 60px #0008; color: #e8f3ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-panel h2 { margin: 0 0 10px; font-size: 15px; line-height: 1.3; color: #9fd7ff; } .ds-panel p { margin: 0; font-size: 12px; line-height: 1.45; }"
+    },
+    {
+      "name": "JSON Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Dense editable field for scene, animation, protocol, or config JSON.",
+      "html": "<textarea class=\"ds-json-field\">{\n  \"sceneId\": \"stacky.neutral.v1\"\n}</textarea>",
+      "css": ".ds-json-field { width: 100%; min-height: 120px; box-sizing: border-box; border-radius: 10px; border: 1px solid #334155; background: #05070d; color: #e8f3ff; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45; } .ds-json-field:focus-visible { outline: 2px solid #35d0a4; outline-offset: 2px; }"
+    },
+    {
+      "name": "Stacky Device Preview",
+      "kind": "custom",
+      "refersTo": "device-preview",
+      "description": "Physical 320x240 preview frame for constrained StackChan render scenes.",
+      "html": "<div class=\"ds-device\"><svg viewBox=\"0 0 320 240\" role=\"img\" aria-label=\"Stacky render preview\"><rect width=\"320\" height=\"240\" fill=\"#000000\"/><circle cx=\"112\" cy=\"100\" r=\"24\" fill=\"#eef7ff\"/><circle cx=\"208\" cy=\"100\" r=\"24\" fill=\"#eef7ff\"/><rect x=\"131\" y=\"164\" width=\"58\" height=\"8\" rx=\"4\" fill=\"#eef7ff\"/></svg></div>",
+      "css": ".ds-device { width: 320px; height: 240px; image-rendering: pixelated; background: #000; border: 8px solid #1d2738; border-radius: 22px; box-shadow: inset 0 0 0 1px #61708a, 0 28px 70px #000a; overflow: hidden; } .ds-device svg { width: 100%; height: 100%; display: block; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Workshop Console",
+    "overview": "The visual system is a compact dark workbench for agent-assisted robot setup. It should feel like a friendly maker console: concrete, legible, slightly playful where StackChan appears, and strict wherever firmware, tokens, serial ports, or device state are involved.\n\nThe current surface is the render simulator: a two-panel tool with JSON editors, command buttons, output logs, and a large device preview. The atmosphere comes from layered dark panels, monospace typography, green action color, cyan status labels, and a physical device frame around the 320x240 preview. It rejects the PRODUCT.md anti-references directly: no flashy demo that hides operational details, no decorative UI that distracts from setup, diagnostics, command safety, device state, or validation evidence, and no guessing of secrets, LAN IPs, serial ports, credentials, or hardware outcomes.",
+    "keyCharacteristics": [
+      "Dense, readable, and tool-like.",
+      "Dark by default because the simulator and logs are used like an operator console.",
+      "Playful only in avatar expression, preview feedback, and StackChan face colors.",
+      "Buttons and panels are practical controls, not marketing decoration.",
+      "Evidence, device state, and errors must be visually louder than personality."
+    ],
+    "rules": [
+      { "name": "The Evidence Color Rule", "body": "Green means a concrete command. Cyan means orientation or status. Pink belongs to StackChan expression. Never use these accents as generic decoration.", "section": "colors" },
+      { "name": "The Same Instrument Rule", "body": "Do not introduce a display font for tooling UI. Firmware setup, JSON editing, route names, and status output should feel like they belong to the same instrument panel.", "section": "typography" },
+      { "name": "The Layered Utility Rule", "body": "Shadows must clarify workspace structure. If a shadow makes a button, card, or panel feel decorative rather than easier to parse, remove it.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do preserve the dark mono console atmosphere for setup, simulator, and debug surfaces.",
+      "Do reserve Workbench Action Green for concrete actions that run commands, send scene data, or change preview/device state.",
+      "Do make device state, output logs, and errors readable before adding personality.",
+      "Do use playful color and expression inside the StackChan avatar preview, where charm has a clear boundary.",
+      "Do keep responsive behavior structural: stack panels on small screens and preserve the 320x240 device ratio."
+    ],
+    "donts": [
+      "Don't create a flashy demo that hides operational details.",
+      "Don't add decorative UI that distracts from setup, diagnostics, command safety, device state, or validation evidence.",
+      "Don't guess or hard-code secrets, LAN IPs, serial ports, Wi-Fi credentials, provider keys, or hardware validation outcomes.",
+      "Don't use accents as generic decoration. Green is action, cyan is orientation or status, pink is StackChan expression.",
+      "Don't replace the mono tool vocabulary with display type, marketing cards, gradient text, or decorative glass panels."
+    ]
+  }
+}

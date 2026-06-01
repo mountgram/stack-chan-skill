@@ -1,0 +1,9 @@
+{
+  "files": [
+    "assets/fullstack-agent/src/server/debug-page.ts",
+    "assets/fullstack-agent/src/render/simulator-page.ts"
+  ],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}
