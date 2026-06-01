@@ -1,3 +1,6 @@
 vendor
 !vendor/.gitkeep
 node_modules
+.xdg
+.envrc
+.env
