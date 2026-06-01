@@ -22,6 +22,7 @@ You are here because you want Claude Code, OpenCode, Codex, etc to help you:
 - make the robot connect to that server over Wi-Fi
 - hack on robot behaviors like faces, speech, movement, lights, audio, tools, and personality
 - define custom rendered avatar faces and lightweight animations from the server
+- add server-selected standby behavior, including tap-to-talk and local wake-word detection
 
 This is not the robot personality. It is the reusable technical starter kit that lets an agent build the robot connection correctly. Personality prompts, provider choices, API keys, LAN IPs, memory, and product behavior belong in your own robot brain project.
 
@@ -48,10 +49,11 @@ First, read the skill's SKILL.md and only the references needed for this setup. 
 4. Add this skill's app_remote_agent firmware app to the local StackChan firmware.
 5. Patch and register the app as documented by the skill, including booting directly into `REMOTE.AGENT` while keeping the launcher available from the home button.
 6. Create or update a Bun/TypeScript brain server in this project that can receive the robot WebSocket connection.
-7. Tell me what environment variables I need to set, without inventing secrets or hard-coding my private LAN details.
-8. Build what can be built safely.
-9. Before flashing hardware, show me the serial port you plan to use and wait for my confirmation.
-10. At the end, tell me exactly what was changed, what was verified, and what still needs real hardware validation.
+7. Add server-selected standby support. The server should be able to choose tap-only standby or wake-word standby when the firmware advertises wake-word capability.
+8. Tell me what environment variables I need to set, without inventing secrets or hard-coding my private LAN details.
+9. Build what can be built safely.
+10. Before flashing hardware, show me the serial port you plan to use and wait for my confirmation.
+11. At the end, tell me exactly what was changed, what was verified, and what still needs real hardware validation.
 ```
 
 ### Agent Starting Checklist
@@ -69,8 +71,9 @@ When an agent uses this skill, it should start by making the local setup concret
 9. Apply `assets/app_remote_agent/boot-into-remote-agent.sh` so the launcher opens `REMOTE.AGENT` once at boot.
 10. Build from `vendor/StackChan/firmware`, after sourcing `vendor/esp-idf/export.sh` in the same shell.
 11. Create or update the Bun/TypeScript brain server in the user's robot brain project.
-12. Verify server health, firmware URL/token config, and device WebSocket protocol compatibility.
-13. Flash only when hardware is connected and the serial port choice is explicit.
+12. If wake-word standby is requested, read `references/wake-word-standby.md`, train or package the requested model, and make firmware advertise `wakeWord` only after a real detector is integrated.
+13. Verify server health, firmware URL/token config, and device WebSocket protocol compatibility.
+14. Flash only when hardware is connected and the serial port choice is explicit.
 
 ## The Robot App This Skill Adds
 
@@ -82,6 +85,7 @@ Its job is to make StackChan act like a Wi-Fi robot terminal:
 - it connects to your computer's brain server over WebSocket
 - it sends robot events like button presses, audio, images, telemetry, and connection status
 - it receives commands like speak, show text, change face, move servos, set LEDs, and capture audio/image data
+- it can enter standby where the server decides whether tap-to-talk is enough or whether a local wake-word detector should also be armed
 
 The point is to keep complicated AI behavior off the microcontroller. The robot runs a thin app; your computer runs the smarter brain.
 
@@ -95,6 +99,8 @@ Render animations are intentionally ESP32-friendly:
 - optional `audioLevel` tracks so firmware can locally drive values from mic or playback loudness
 
 This lets the server say "scale the mouth with playback level" once, without sending per-frame mouth updates over WebSocket.
+
+Wake-word detection follows the same thin-terminal boundary. The server owns policy: it sends `standby` with no wake-word config for tap-only standby, or with a `wakeWord` request when it wants the robot to arm a compiled local microWakeWord model. The firmware only advertises `wakeWord` after the detector exists and can run on the target hardware.
 
 You do not need to understand all the firmware tooling before getting started. The agent uses this skill to handle those details and should explain hardware or setup blockers in plain language.
 
@@ -118,6 +124,7 @@ Current references cover:
 - build, flash, and monitor commands
 - server/device WebSocket protocol
 - server-driven rendering, blink behavior, multi-layer animation, and audio-reactive mouth controls
+- server-selected wake-word standby with OHF microWakeWord training and firmware packaging
 - minimal Bun brain starter
 - full-stack voice agent starter with Deepgram and AI SDK tools
 - troubleshooting
@@ -127,6 +134,8 @@ Current references cover:
 Reusable robot-side firmware app files for the StackChan side of the remote-agent system.
 
 These files implement the thin robot terminal behavior: connect to the brain server over WebSocket, exchange JSON commands/events, and support device capabilities exposed by the firmware.
+
+The remote-agent assets also include the local wake-word runner and generated model packaging files when wake-word support is enabled. Those files keep detection local to the robot while preserving the normal server-side voice pipeline after wake.
 
 The helper script `assets/app_remote_agent/link-into-stackchan.sh` links these source files into your local copy of the official StackChan firmware.
 
@@ -147,6 +156,28 @@ It includes server routes, device protocol helpers, command safety, Deepgram voi
 A small helper that patches the local copy of the official StackChan firmware so the robot app can be built with the WebSocket URL of your brain server.
 
 Run this only after `vendor/StackChan` exists.
+
+### `scripts/create-wake-word-workspace.sh`
+
+Creates a project-local OHF microWakeWord training workspace for a requested phrase, including Piper sample generation controls, feature generation, training config, and model manifest output.
+
+For example:
+
+```text
+bash .agents/skills/stack-chan-skill/scripts/create-wake-word-workspace.sh "Stacky" --project-root "$PWD"
+```
+
+Use this when a user asks for a custom wake word such as "update the wake word to Banana and flash the device." The agent should train or refresh the model, package the resulting `.tflite` for the firmware wake-word runner, build, flash, and verify the device hears the phrase.
+
+### `scripts/patch-micro-wake-word-component.sh`
+
+Applies local ESP-IDF compatibility fixes to the fetched standalone microWakeWord managed component after the first firmware build downloads it.
+
+Run this from the project using the skill checkout after `vendor/StackChan/firmware/managed_components/micro_wake_word` exists:
+
+```text
+bash .agents/skills/stack-chan-skill/scripts/patch-micro-wake-word-component.sh
+```
 
 ### `.env.example`
 
@@ -263,6 +294,8 @@ Then the agent adds `app_remote_agent` to that local firmware checkout.
 - Do not run `idf.py` until `vendor/esp-idf/export.sh` has been sourced in that shell.
 - Do not guess a serial port for flashing.
 - Do not claim firmware build, flash, or robot connection success unless the command or hardware check actually ran.
+- Do not claim wake-word support is present until firmware advertises `wakeWord`, the local detector initializes, and a spoken phrase triggers the normal listen flow on hardware.
+- Do not commit private wake-word training workspaces, raw downloaded datasets, or one-off generated artifacts unless they are intentionally part of the reusable skill.
 - Do not force the StackChan motors by hand while powered or under software control.
 - Do not put your robot's personality, memory, provider accounts, or private deployment details into this reusable skill.
 
@@ -273,6 +306,7 @@ Edit this skill when the reusable StackChan setup knowledge changes, such as:
 - upstream `m5stack/StackChan` changes its firmware layout
 - ESP-IDF version requirements change
 - `app_remote_agent` changes its generic protocol or firmware behavior
+- wake-word training, packaging, firmware integration, or verification workflow changes
 - the Bun starter protocol needs a reusable correction
 - agents repeatedly fail a setup step and the instructions need to be clearer
 
