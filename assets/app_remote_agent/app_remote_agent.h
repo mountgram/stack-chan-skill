@@ -113,6 +113,7 @@ private:
     std::atomic_bool _audio_streaming{false};
     std::atomic_bool _audio_start_pending{false};
     std::atomic_bool _audio_first_input_attempt_logged{false};
+    std::atomic_bool _audio_playback_active{false};
     std::atomic_bool _audio_playback_cancel{false};
     std::atomic_bool _tasks_stopping{false};
     std::atomic<uint32_t> _audio_stream_started_at{0};
@@ -128,6 +129,7 @@ private:
     std::vector<int> _decorator_ids;
     std::string _render_scene_id;
     std::string _render_scene_json;
+    std::vector<int16_t> _audio_input_chunk;
     std::vector<RenderNodeRef> _render_nodes;
     uint32_t _render_animation_last_frame_at = 0;
     std::vector<RenderAnimationState> _render_animations;
@@ -151,6 +153,8 @@ private:
     void sendPacket(uint8_t type, const uint8_t* data, size_t len);
     void sendAck(const char* requestId);
     void sendError(const char* requestId, const char* message);
+    void logHeap(const char* label);
+    bool hasInternalSram(size_t minimum, const char* label);
     void ackPendingAudioStart();
     void failPendingAudioStart(const char* message);
     void resetAudioStartState(const char* requestId);
@@ -169,7 +173,7 @@ private:
     void disarmWakeWord(uint32_t wait_ms = 0);
     void handleWakeWordDetected(const std::string& wake_word);
     bool captureAndSendAudioFrame();
-    void captureAndSendCameraImage(const char* requestId, bool enhance);
+    bool captureAndSendCameraImage(const char* requestId, bool enhance);
     bool queueAudioPlayback(const char* requestId, const char* url);
     void audioPlaybackLoop();
     void audioCaptureLoop();

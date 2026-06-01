@@ -19,6 +19,7 @@ Read this when StackChan setup, firmware, or server integration fails.
 | Linux flash permission denied | User lacks serial group permission. | Add user to `dialout` or distro-equivalent group, then re-login. |
 | Camera images are too dark | Low-light scene or sensor exposure behavior. | Try `captureImage` with `enhance: true`; consider firmware sensor controls if supported. |
 | Device stays on `Streaming mic...` after `speechDone` and the next `startAudio` | Server receives `ack` for `startAudio`, then no binary PCM, no telemetry, and no later command acks. This points to firmware-side audio capture or codec transition wedging after playback, not Deepgram STT. | Use the current `app_remote_agent` asset so `startAudio` ack is delayed until a PCM frame is queued, inspect logs around wake-word disarm, `EnableInput(true)`, first `InputData(...)`, first PCM frame queued/sent, `EnableOutput(false)`, and the audio start timeout. If it still wedges after `first InputData attempt`, suspect a blocking codec/HAL call. |
+| `SystemInfo` reports very low minimum SRAM | Camera, render scene creation, playback, wake-word inference, or per-frame audio allocations are exhausting internal SRAM margin. | Use the current `app_remote_agent` asset: it rejects camera capture during audio, adds internal-SRAM guards for camera/render/speech, logs heap around expensive operations, and reuses the mic input buffer instead of allocating it every frame. |
 
 ## Recovery Principles
 

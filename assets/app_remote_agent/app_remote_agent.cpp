@@ -10,6 +10,7 @@
 #include <assets/assets.h>
 #include <audio/audio_codec.h>
 #include <board.h>
+#include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <hal/board/config.h>
 #include <hal/board/hal_bridge.h>
@@ -41,16 +42,13 @@ static const char* TAG = "REMOTE.AGENT";
 static constexpr size_t MAX_RENDER_ANIMATIONS = 4;
 static constexpr size_t MAX_RENDER_TRACKS = 32;
 static constexpr uint32_t AUDIO_START_TIMEOUT_MS = 2000;
+static constexpr size_t MIN_INTERNAL_SRAM_SPEAK = 8192;
+static constexpr size_t MIN_INTERNAL_SRAM_RENDER = 12288;
+static constexpr size_t MIN_INTERNAL_SRAM_CAMERA = 32768;
 
 static int clamp_int(int value, int min, int max)
 {
     return std::min(max, std::max(min, value));
-}
-
-static void append_u16_le(std::vector<uint8_t>& data, uint16_t value)
-{
-    data.push_back(value & 0xff);
-    data.push_back((value >> 8) & 0xff);
 }
 
 static uint8_t level_luma(uint8_t y, uint8_t low, uint8_t high)
@@ -397,6 +395,7 @@ void AppRemoteAgent::stopAudioTasks()
     _tasks_stopping = true;
     _audio_streaming = false;
     _audio_start_pending = false;
+    _audio_playback_active = false;
     _audio_playback_cancel = true;
     if (_audio_playback_queue) {
         xQueueReset(_audio_playback_queue);
@@ -467,6 +466,21 @@ void AppRemoteAgent::sendQueuedAudioFrames()
             _last_audio_frame_sent_at = GetHAL().millis();
         }
     }
+}
+
+void AppRemoteAgent::logHeap(const char* label)
+{
+    mclog::tagInfo(TAG, "heap {} free={} min={}", label ? label : "", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                   heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+
+bool AppRemoteAgent::hasInternalSram(size_t minimum, const char* label)
+{
+    const size_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (free_sram >= minimum) return true;
+    mclog::tagInfo(TAG, "low sram for {} free={} required={} min={}", label ? label : "operation", free_sram, minimum,
+                   heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    return false;
 }
 
 void AppRemoteAgent::ackPendingAudioStart()
@@ -585,6 +599,11 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "speak") == 0) {
         const char* audioUrl = doc["audioUrl"] | "";
+        logHeap("before speak");
+        if (!hasInternalSram(MIN_INTERNAL_SRAM_SPEAK, "speak")) {
+            sendError(requestId, "low memory for speech");
+            return;
+        }
         setStatus("speaking", "Speaking...");
         {
             LvglLockGuard lock;
@@ -607,6 +626,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "startAudio") == 0) {
         mclog::tagInfo(TAG, "received startAudio requestId={}", requestId);
+        logHeap("before startAudio");
         auto audio_codec = Board::GetInstance().GetAudioCodec();
         if (!audio_codec) {
             sendError(requestId, "audio codec unavailable");
@@ -619,6 +639,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         _audio_streaming = true;
         mclog::tagInfo(TAG, "_audio_streaming = true");
         setStatus("listening", "Streaming mic...");
+        logHeap("after startAudio");
         return;
     }
 
@@ -627,6 +648,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         _audio_streaming = false;
         failPendingAudioStart("audio capture stopped before start");
         if (doc["wakeWord"].is<ArduinoJson::JsonObject>()) {
+            logHeap("before wake-word arm");
             ArduinoJson::JsonObject wake_word = doc["wakeWord"].as<ArduinoJson::JsonObject>();
             const char* model_id                   = wake_word["modelId"] | "";
             const char* phrase                     = wake_word["phrase"] | "Stacky";
@@ -638,6 +660,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
                 sendError(requestId, "wake word detector unavailable");
                 return;
             }
+            logHeap("after wake-word arm");
         } else {
             disarmWakeWord(500);
         }
@@ -647,7 +670,13 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "captureImage") == 0) {
-        captureAndSendCameraImage(requestId, doc["enhance"] | false);
+        if (_audio_streaming || _audio_playback_active) {
+            sendError(requestId, "camera unavailable during audio");
+            return;
+        }
+        if (!captureAndSendCameraImage(requestId, doc["enhance"] | false)) {
+            return;
+        }
         sendAck(requestId);
         return;
     }
@@ -717,6 +746,11 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "render.defineScene") == 0) {
+        logHeap("before render.defineScene");
+        if (!hasInternalSram(MIN_INTERNAL_SRAM_RENDER, "render.defineScene")) {
+            sendError(requestId, "low memory for render scene");
+            return;
+        }
         const char* sceneId = doc["sceneId"] | "";
         if (!sceneId[0]) {
             sendError(requestId, "sceneId required");
@@ -725,22 +759,33 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         _render_scene_id = sceneId;
         _render_scene_json = data;
         renderSceneJson(_render_scene_json);
+        logHeap("after render.defineScene");
         sendAck(requestId);
         return;
     }
 
     if (strcmp(type, "render.setScene") == 0) {
+        logHeap("before render.setScene");
+        if (!hasInternalSram(MIN_INTERNAL_SRAM_RENDER, "render.setScene")) {
+            sendError(requestId, "low memory for render scene");
+            return;
+        }
         const char* sceneId = doc["sceneId"] | "";
         if (_render_scene_id.empty() || _render_scene_id != sceneId) {
             sendError(requestId, "scene not defined");
             return;
         }
         renderSceneJson(_render_scene_json);
+        logHeap("after render.setScene");
         sendAck(requestId);
         return;
     }
 
     if (strcmp(type, "render.animate") == 0) {
+        if (!hasInternalSram(MIN_INTERNAL_SRAM_RENDER, "render.animate")) {
+            sendError(requestId, "low memory for render animation");
+            return;
+        }
         if (!startRenderAnimation(doc, requestId)) {
             return;
         }
@@ -1343,8 +1388,11 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
 
     constexpr size_t chunk_frames = 512;
     const size_t input_channels = std::max(audio_codec->input_channels(), 1);
-    std::vector<int16_t> input_chunk(chunk_frames * input_channels);
-    if (!audio_codec->InputData(input_chunk)) {
+    const size_t input_samples = chunk_frames * input_channels;
+    if (_audio_input_chunk.size() != input_samples) {
+        _audio_input_chunk.resize(input_samples);
+    }
+    if (!audio_codec->InputData(_audio_input_chunk)) {
         _audio_input_failures++;
         vTaskDelay(pdMS_TO_TICKS(5));
         return false;
@@ -1352,22 +1400,20 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
     if (_last_audio_frame_queued_at.load() == 0) {
         mclog::tagInfo(TAG, "first successful InputData");
     }
-    std::vector<uint8_t> pcm;
-    pcm.reserve(chunk_frames * 2);
-    std::vector<int16_t> mono_samples;
-    mono_samples.reserve(chunk_frames);
-    for (size_t frame = 0; frame < chunk_frames; ++frame) {
-        int16_t sample = input_chunk[frame * input_channels];
-        mono_samples.push_back(sample);
-        append_u16_le(pcm, static_cast<uint16_t>(sample));
-    }
-    _mic_audio_level = smooth_level_1000(_mic_audio_level.load(), pcm_level_1000(mono_samples));
-    if (!_audio_frame_queue || pcm.size() > sizeof(AudioPcmFrame::data)) {
+    if (!_audio_frame_queue || chunk_frames * 2 > sizeof(AudioPcmFrame::data)) {
         return false;
     }
     AudioPcmFrame frame;
-    frame.len = pcm.size();
-    memcpy(frame.data, pcm.data(), pcm.size());
+    frame.len = chunk_frames * 2;
+    uint64_t total = 0;
+    for (size_t i = 0; i < chunk_frames; ++i) {
+        int16_t sample = _audio_input_chunk[i * input_channels];
+        total += static_cast<uint16_t>(std::abs(static_cast<int>(sample)));
+        frame.data[i * 2] = sample & 0xff;
+        frame.data[i * 2 + 1] = (sample >> 8) & 0xff;
+    }
+    const int average = static_cast<int>(total / chunk_frames);
+    _mic_audio_level = smooth_level_1000(_mic_audio_level.load(), clamp_int((average * 1000) / 12000, 0, 1000));
     if (xQueueSend(_audio_frame_queue, &frame, 0) != pdTRUE) {
         _audio_input_failures++;
         return false;
@@ -1481,18 +1527,23 @@ void AppRemoteAgent::audioCaptureLoop()
     vTaskDelete(nullptr);
 }
 
-void AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhance)
+bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhance)
 {
+    logHeap("before captureImage");
+    if (!hasInternalSram(MIN_INTERNAL_SRAM_CAMERA, "captureImage")) {
+        sendError(requestId, "low memory for camera capture");
+        return false;
+    }
     auto camera = hal_bridge::board_get_camera();
     if (!camera) {
         sendError(requestId, "camera unavailable");
-        return;
+        return false;
     }
 
     for (int i = 0; i < 4; ++i) {
         if (!camera->StreamCaptures()) {
             sendError(requestId, "camera capture failed");
-            return;
+            return false;
         }
         if (i < 3) {
             GetHAL().delay(250);
@@ -1521,7 +1572,7 @@ void AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
     if (!image_to_jpeg((uint8_t*)frameData, frameSize, width, height, (v4l2_pix_fmt_t)format, 80, &jpeg_data, &jpeg_len) ||
         !jpeg_data) {
         sendError(requestId, "jpeg encode failed");
-        return;
+        return false;
     }
 
     char meta[192];
@@ -1530,7 +1581,7 @@ void AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
     if (meta_len <= 0 || meta_len >= (int)sizeof(meta)) {
         free(jpeg_data);
         sendError(requestId, "camera metadata failed");
-        return;
+        return false;
     }
 
     std::vector<uint8_t> packet;
@@ -1547,22 +1598,30 @@ void AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
         _websocket->Send(packet.data(), packet.size(), true);
     }
     free(jpeg_data);
+    logHeap("after captureImage");
+    return true;
 }
 
 void AppRemoteAgent::playAudioUrl(const char* url)
 {
     mclog::tagInfo(TAG, "playback start");
+    logHeap("playback start");
+    _audio_playback_active = true;
     esp_http_client_config_t config = {};
     config.url = url;
     config.timeout_ms = 10000;
     auto client = esp_http_client_init(&config);
     if (!client) {
+        _audio_playback_active = false;
         mclog::tagInfo(TAG, "playback end: http client init failed");
+        logHeap("playback end");
         return;
     }
     if (esp_http_client_open(client, 0) != ESP_OK) {
         esp_http_client_cleanup(client);
+        _audio_playback_active = false;
         mclog::tagInfo(TAG, "playback end: http open failed");
+        logHeap("playback end");
         return;
     }
     esp_http_client_fetch_headers(client);
@@ -1571,7 +1630,9 @@ void AppRemoteAgent::playAudioUrl(const char* url)
     if (!audio_codec) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
+        _audio_playback_active = false;
         mclog::tagInfo(TAG, "playback end: audio codec unavailable");
+        logHeap("playback end");
         return;
     }
 
@@ -1615,7 +1676,9 @@ void AppRemoteAgent::playAudioUrl(const char* url)
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+    _audio_playback_active = false;
     mclog::tagInfo(TAG, "playback end");
+    logHeap("playback end");
 }
 
 void AppRemoteAgent::onClose()
@@ -1623,6 +1686,7 @@ void AppRemoteAgent::onClose()
     mclog::tagInfo(TAG, "on close");
     _opened = false;
     _audio_start_pending = false;
+    _audio_playback_active = false;
     if (_wake_word_detector) {
         _wake_word_detector->shutdown();
         _wake_word_detector.reset();
