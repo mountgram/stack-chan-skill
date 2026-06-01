@@ -1306,10 +1306,10 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
         lv_label_set_text(_main_label, show_main && text ? text : "");
     }
     if (_log_label) {
-        if (_render_active) {
-            lv_label_set_text(_log_label, "");
-        } else if (is_visible_status_mode(mode)) {
+        if (is_visible_status_mode(mode)) {
             lv_label_set_text(_log_label, text ? text : "");
+        } else if (_render_active) {
+            lv_label_set_text(_log_label, "");
         } else {
             lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
         }
