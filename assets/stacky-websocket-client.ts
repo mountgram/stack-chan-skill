@@ -11,14 +11,14 @@
  *     bun run assets/stacky-websocket-client.ts
  */
 
-type DeviceMode = "offline" | "connecting" | "connected" | "listening" | "thinking" | "speaking" | "error";
+type DeviceMode = "offline" | "connecting" | "connected" | "standby" | "listening" | "thinking" | "speaking" | "error";
 type FaceEmotion = "none" | "neutral" | "happy" | "angry" | "sad" | "doubt" | "sleepy";
 type LedPattern = "solid" | "pulse" | "off";
 
 type DeviceToServerMessage =
   | { type: "hello"; id: string; version: number; capabilities: string[] }
   | { type: "telemetry"; battery: number; charging: boolean; wifiRssi: number; pose: { yaw: number; pitch: number }; volume: number }
-  | { type: "event"; event: "tap" | "hold" | "stop" | "speechDone" | string; at?: number }
+  | { type: "event"; event: "tap" | "hold" | "stop" | "speechDone" | "wakeWord" | string; at?: number; wakeWord?: string; phrase?: string; modelId?: string; score?: number }
   | { type: "ack"; requestId: string; ok: true }
   | { type: "error"; requestId: string; message: string };
 
@@ -38,6 +38,7 @@ type ServerToDeviceCommand =
   | { type: "speak"; requestId: string; text: string; audioUrl?: string }
   | { type: "startAudio"; requestId: string }
   | { type: "stopAudio"; requestId: string }
+  | { type: "standby"; requestId: string; text?: string; wakeWord?: { enabled: boolean; phrase?: string; modelId?: string; modelUrl?: string } }
   | { type: "captureImage"; requestId: string; enhance?: boolean }
   | { type: "volume"; requestId: string; volume: number }
   | { type: "stop"; requestId: string; target?: "all" | "speech" | "motion" }
@@ -56,6 +57,7 @@ let pitch = 35;
 let volume = 70;
 let audioTimer: Timer | undefined;
 let telemetryTimer: Timer | undefined;
+let wakeWordTimer: Timer | undefined;
 
 const ws = new WebSocket(wsUrl);
 
@@ -67,7 +69,7 @@ ws.addEventListener("open", () => {
     type: "hello",
     id: "stacky-client-example",
     version: 1,
-    capabilities: ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "avatarJson", "decorator"],
+    capabilities: ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "avatarJson", "decorator"],
   });
   sendTelemetry();
   telemetryTimer = setInterval(sendTelemetry, 3000);
@@ -95,6 +97,7 @@ ws.addEventListener("close", () => {
   console.log("disconnected");
   if (telemetryTimer) clearInterval(telemetryTimer);
   if (audioTimer) clearInterval(audioTimer);
+  if (wakeWordTimer) clearTimeout(wakeWordTimer);
 });
 
 ws.addEventListener("error", (event) => {
@@ -142,6 +145,14 @@ async function handleCommand(command: ServerToDeviceCommand) {
       ack(command.requestId);
       return;
 
+    case "standby":
+      stopAudioStream();
+      stopWakeWordTimer();
+      console.log(`standby text=${command.text ?? ""} wakeWord=${command.wakeWord?.phrase ?? "none"}`);
+      ack(command.requestId);
+      if (command.wakeWord?.enabled) startWakeWordTimer(command.wakeWord.phrase ?? "Stacky", command.wakeWord.modelId ?? "stacky");
+      return;
+
     case "captureImage":
       ack(command.requestId);
       sendCameraImage(command.requestId);
@@ -154,6 +165,7 @@ async function handleCommand(command: ServerToDeviceCommand) {
 
     case "stop":
       stopAudioStream();
+      stopWakeWordTimer();
       console.log(`stop target=${command.target ?? "all"}`);
       ack(command.requestId);
       return;
@@ -192,6 +204,7 @@ function sendTelemetry() {
 }
 
 function startAudioStream() {
+  stopWakeWordTimer();
   if (audioTimer) return;
   audioTimer = setInterval(() => {
     sendPacket(PACKET_AUDIO_PCM, makeSilentPcm(512));
@@ -202,6 +215,19 @@ function stopAudioStream() {
   if (!audioTimer) return;
   clearInterval(audioTimer);
   audioTimer = undefined;
+}
+
+function startWakeWordTimer(phrase: string, modelId: string) {
+  wakeWordTimer = setTimeout(() => {
+    wakeWordTimer = undefined;
+    sendJson({ type: "event", event: "wakeWord", wakeWord: phrase, phrase, modelId, score: 1, at: Date.now() });
+  }, 3000);
+}
+
+function stopWakeWordTimer() {
+  if (!wakeWordTimer) return;
+  clearTimeout(wakeWordTimer);
+  wakeWordTimer = undefined;
 }
 
 function sendCameraImage(requestId: string) {

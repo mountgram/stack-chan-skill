@@ -133,7 +133,20 @@ function scheduleListenTimeout() {
 
 function showStandby() {
   if (!registry.hasDevice()) return;
-  device.screen("Standby. Tap to talk.", "connected");
+  const snapshot = registry.stateSnapshot() as { capabilities?: string[] };
+  const standbySupported = snapshot.capabilities?.includes("standby") ?? false;
+  const wakeWordSupported = snapshot.capabilities?.includes("wakeWord") ?? false;
+  const wakeWord = config.wakeWord.enabled && wakeWordSupported
+    ? {
+        enabled: true,
+        phrase: config.wakeWord.phrase,
+        modelId: config.wakeWord.modelId,
+        modelUrl: config.wakeWord.modelUrl,
+      }
+    : undefined;
+  const text = wakeWord ? `Standby. Say "${config.wakeWord.phrase}".` : "Standby. Tap to talk.";
+  if (standbySupported) device.standby(text, wakeWord);
+  else device.screen(text, "connected");
   device.face("none");
   device.led("#224466");
 }
@@ -154,6 +167,7 @@ function closeVoiceSessions() {
 }
 
 async function ensureStt() {
+  if (config.voiceMock) return;
   if (!sttSession) {
     sttSession = new DeepgramLiveSession(handleSttEvent);
     await sttSession.start();
@@ -161,6 +175,7 @@ async function ensureStt() {
 }
 
 async function ensureTts() {
+  if (config.voiceMock) return;
   if (!ttsSession) {
     ttsSession = new DeepgramStreamingTts();
     await ttsSession.start();
@@ -468,6 +483,11 @@ export function createServer() {
             const event = (parsed as { event?: string }).event;
             if (event === "speechDone") handleSpeechDone();
             if (event === "tap") handleTap();
+            if (event === "wakeWord") {
+              startConversation().catch((error) => {
+                registry.handleDeviceMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });
+              });
+            }
           }
         } catch (error) {
           ws.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));

@@ -20,6 +20,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | Implement compatible server/device messages | `references/device-protocol.md` |
 | Create, run, or maintain the Bun TypeScript brain server | `references/bun-brain-starter.md` |
 | Build a full voice agent server with Deepgram, TypeScript, and tools | `references/full-stack-voice-agent.md` |
+| Add server-selected wake-word standby with microWakeWord | `references/wake-word-standby.md` |
 | Add custom server-driven avatar scenes or use the local render simulator | `references/server-driven-rendering.md` |
 | Diagnose build, flash, link, or runtime failures | `references/troubleshooting.md` |
 
@@ -33,6 +34,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | Run the remote agent | Start the target app's Bun brain server, verify `/health`, verify `/stacky/device` auth config, then open `REMOTE.AGENT` on StackChan. |
 | Debug a disconnected robot | Check server bind/public URL/token first, then firmware URL, Wi-Fi, WebSocket logs, and device telemetry. |
 | Change protocol or commands | Update firmware, server `device/protocol`, command helpers, and docs together. |
+| Add wake-word standby | Keep the server as policy owner, send `standby` with an optional `wakeWord`, and make firmware advertise `wakeWord` only after a real local detector is integrated. |
 
 ## Default Setup Path
 
@@ -78,6 +80,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 | `assets/stacky-websocket-client.ts` | Bun TypeScript device-client example covering the full WebSocket JSON and binary protocol. |
 | `assets/fullstack-agent/src/render/` | Server render protocol, emotion presets, local simulator, and tests. |
 | `scripts/patch-stackchan.sh` | Patches vendored `CMakeLists.txt` to forward `STACKY_WS_URL` from environment to compile definition. |
+| `scripts/create-wake-word-workspace.sh` | Creates a project-local OHF microWakeWord + Piper training workspace for a requested phrase. |
 | `.env.example` | Minimal env vars the firmware build derives `STACKY_WS_URL` from. |
 
 ## Completion Checklist
@@ -91,4 +94,5 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 - Firmware builds from `vendor/StackChan/firmware`.
 - Server exposes `/stacky/device` WebSocket and handles the documented command/event protocol.
 - Server exposes `/render/simulator` when using the fullstack starter render assets.
+- Server can choose tap-only standby or wake-word standby; firmware advertises `wakeWord` only when local detection is actually available.
 - Running system shows device `hello` and telemetry after opening `REMOTE.AGENT`.

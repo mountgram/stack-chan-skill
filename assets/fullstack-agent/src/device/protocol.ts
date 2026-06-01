@@ -1,5 +1,11 @@
-export type DeviceMode = "offline" | "connecting" | "connected" | "listening" | "thinking" | "speaking" | "error";
+export type DeviceMode = "offline" | "connecting" | "connected" | "standby" | "listening" | "thinking" | "speaking" | "error";
 export type FaceEmotion = "none" | "neutral" | "happy" | "angry" | "sad" | "doubt" | "sleepy";
+
+export type WakeWordModelInfo = {
+  id: string;
+  phrase?: string;
+  source?: "firmware" | "download";
+};
 
 export type DeviceHello = {
   type: "hello";
@@ -7,6 +13,11 @@ export type DeviceHello = {
   device?: string;
   version?: number;
   capabilities?: string[];
+  wakeWord?: {
+    version?: number;
+    models?: WakeWordModelInfo[];
+    dynamicModels?: boolean;
+  };
 };
 
 export type DeviceTelemetry = {
@@ -20,8 +31,12 @@ export type DeviceTelemetry = {
 
 export type DeviceEvent = {
   type: "event";
-  event: "tap" | "hold" | "stop" | string;
+  event: "tap" | "hold" | "stop" | "wakeWord" | string;
   at?: number;
+  wakeWord?: string;
+  phrase?: string;
+  modelId?: string;
+  score?: number;
 };
 
 export type DeviceAck = { type: "ack"; requestId?: string; ok?: boolean };
@@ -35,6 +50,13 @@ export type LedCommand = { type: "led"; requestId: string; color: string };
 export type SpeakCommand = { type: "speak"; requestId: string; text: string; audioUrl?: string };
 export type StartAudioCommand = { type: "startAudio"; requestId: string };
 export type StopAudioCommand = { type: "stopAudio"; requestId: string };
+export type WakeWordConfig = {
+  enabled: boolean;
+  phrase?: string;
+  modelId?: string;
+  modelUrl?: string;
+};
+export type StandbyCommand = { type: "standby"; requestId: string; text?: string; wakeWord?: WakeWordConfig };
 export type CaptureImageCommand = { type: "captureImage"; requestId: string; enhance?: boolean };
 export type VolumeCommand = { type: "volume"; requestId: string; volume: number };
 export type StopCommand = { type: "stop"; requestId: string; target?: "all" | "speech" | "motion" };
@@ -72,7 +94,7 @@ export type RenderCommand =
   | { type: "render.animate"; requestId: string; animationId: string; loop?: boolean; yoyo?: boolean; tracks: unknown[] }
   | { type: "render.reset"; requestId: string };
 
-export type DeviceCommand = ScreenCommand | FaceCommand | LookCommand | LedCommand | SpeakCommand | StartAudioCommand | StopAudioCommand | CaptureImageCommand | VolumeCommand | StopCommand | HomeCommand | AvatarJsonCommand | DecoratorCommand | RenderCommand;
+export type DeviceCommand = ScreenCommand | FaceCommand | LookCommand | LedCommand | SpeakCommand | StartAudioCommand | StopAudioCommand | StandbyCommand | CaptureImageCommand | VolumeCommand | StopCommand | HomeCommand | AvatarJsonCommand | DecoratorCommand | RenderCommand;
 
 export function parseDeviceMessage(raw: string): DeviceMessage {
   const value = JSON.parse(raw) as unknown;

@@ -1,4 +1,4 @@
-import { commandId, type AvatarFeature, type DecoratorName, type DeviceMode, type FaceEmotion } from "./protocol";
+import { commandId, type AvatarFeature, type DecoratorName, type DeviceMode, type FaceEmotion, type WakeWordConfig } from "./protocol";
 import { clampPitch, clampSpeed, clampVolume, clampYaw } from "./safety";
 import { registry } from "./registry";
 
@@ -34,6 +34,10 @@ export function startAudio() {
 
 export function stopAudio() {
   return registry.send({ type: "stopAudio", requestId: commandId() });
+}
+
+export function standby(text = "Standby. Tap to talk.", wakeWord?: WakeWordConfig) {
+  return registry.send({ type: "standby", requestId: commandId(), text: text.slice(0, 180), wakeWord });
 }
 
 export function captureImage(requestId = commandId("img"), enhance = false) {

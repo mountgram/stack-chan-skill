@@ -129,7 +129,7 @@ Build in this order:
 Mirror `references/device-protocol.md`, then add the optional commands the firmware may support.
 
 ```ts
-export type DeviceMode = "offline" | "connecting" | "connected" | "listening" | "thinking" | "speaking" | "error";
+export type DeviceMode = "offline" | "connecting" | "connected" | "standby" | "listening" | "thinking" | "speaking" | "error";
 export type FaceEmotion = "none" | "neutral" | "happy" | "angry" | "sad" | "doubt" | "sleepy";
 
 export type AvatarFeature = { x?: number; y?: number; rotation?: number; weight?: number; size?: number };
@@ -138,7 +138,7 @@ export type DecoratorName = "heart" | "angry" | "sweat" | "shy" | "dizzy";
 export type DeviceMessage =
   | { type: "hello"; id?: string; version?: number; capabilities?: string[] }
   | { type: "telemetry"; battery?: number; charging?: boolean; wifiRssi?: number; pose?: { yaw?: number; pitch?: number }; volume?: number }
-  | { type: "event"; event: "tap" | "speechDone" | string; at?: number }
+  | { type: "event"; event: "tap" | "wakeWord" | "speechDone" | string; at?: number; wakeWord?: string; phrase?: string; modelId?: string; score?: number }
   | { type: "ack"; requestId?: string; ok?: boolean }
   | { type: "error"; requestId?: string; message: string }
   | { type: string; [key: string]: unknown };
@@ -151,6 +151,7 @@ export type DeviceCommand =
   | { type: "speak"; requestId: string; text: string; audioUrl?: string }
   | { type: "startAudio"; requestId: string }
   | { type: "stopAudio"; requestId: string }
+  | { type: "standby"; requestId: string; text?: string; wakeWord?: { enabled: boolean; phrase?: string; modelId?: string; modelUrl?: string } }
   | { type: "captureImage"; requestId: string; enhance?: boolean }
   | { type: "volume"; requestId: string; volume: number }
   | { type: "stop"; requestId: string; target?: "all" | "speech" | "motion" }
@@ -429,6 +430,13 @@ Conversation start:
 5. Send `screen("Listening...", "listening")`, LED feedback, and `startAudio()`.
 6. Start a listen timeout so the robot returns to standby if the user stops talking.
 
+Standby:
+
+1. Send `standby` instead of a plain `screen` update.
+2. If the device advertises `wakeWord`, include the server-selected `wakeWord` config.
+3. If wake-word support is absent, omit `wakeWord` and preserve tap-to-talk.
+4. On `event: "wakeWord"`, call the same conversation start path used by tap-to-talk.
+
 Processing a turn:
 
 1. Guard against concurrent turns with `isTurnInProgress`.
@@ -517,7 +525,7 @@ On device WebSocket open:
 On message:
 
 - If binary, dispatch by packet type.
-- If JSON, parse as `DeviceMessage`, update registry, handle `tap` and `speechDone` events.
+- If JSON, parse as `DeviceMessage`, update registry, handle `tap`, `wakeWord`, and `speechDone` events.
 
 On close:
 

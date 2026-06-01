@@ -5,6 +5,12 @@ const numberFromEnv = (name: string, fallback: number) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const booleanFromEnv = (name: string, fallback: boolean) => {
+  const raw = Bun.env[name];
+  if (!raw) return fallback;
+  return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
+};
+
 export const config = {
   host: Bun.env.STACKY_SERVER_HOST ?? "0.0.0.0",
   port: numberFromEnv("STACKY_SERVER_PORT", 6001),
@@ -16,6 +22,13 @@ export const config = {
   deepgramApiKey: Bun.env.DEEPGRAM_API_KEY,
   deepgramTtsModel: "aura-2-pandora-en",
   openrouterModel: "anthropic/claude-haiku-4.5:nitro",
+  voiceMock: booleanFromEnv("STACKY_VOICE_MOCK", false),
+  wakeWord: {
+    enabled: booleanFromEnv("STACKY_WAKE_WORD_ENABLED", true),
+    phrase: Bun.env.STACKY_WAKE_WORD_PHRASE ?? Bun.env.STACKY_WAKE_WORD ?? "Stacky",
+    modelId: Bun.env.STACKY_WAKE_WORD_MODEL_ID ?? "stacky",
+    modelUrl: Bun.env.STACKY_WAKE_WORD_MODEL_URL,
+  },
 };
 
 export function healthConfig() {
@@ -25,6 +38,13 @@ export function healthConfig() {
     publicBaseUrl: config.publicBaseUrl,
     hasOpenrouterApiKey: Boolean(config.openrouterApiKey),
     hasDeepgramApiKey: Boolean(config.deepgramApiKey),
+    voiceMock: config.voiceMock,
     hasDeviceToken: Boolean(config.deviceToken),
+    wakeWord: {
+      enabled: config.wakeWord.enabled,
+      phrase: config.wakeWord.phrase,
+      modelId: config.wakeWord.modelId,
+      hasModelUrl: Boolean(config.wakeWord.modelUrl),
+    },
   };
 }

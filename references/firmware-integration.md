@@ -90,8 +90,21 @@ Do not commit a private LAN IP or token to reusable files.
 - connect to the brain WebSocket
 - send `hello`, telemetry, tap events, audio frames, and camera frames
 - receive screen, face, look, led, speak, startAudio, stopAudio, captureImage, stop, home, and ping commands
+- receive standby commands; if wake-word support is present, arm the server-selected local detector only in standby
 - receive `render.defineScene`, `render.setScene`, `render.reset`, and play `render.animate` keyframes for server-driven avatar rendering
 - clamp pitch to `5..85` and yaw to `-128..128`
 - rate-limit motion commands
 - play server-generated PCM audio from a URL
 - keep UI responsive and reconnect periodically
+
+## Wake-Word Integration Point
+
+Keep wake-word detection out of the always-streaming STT path. `startAudio` streams microphone PCM to the server; `standby` stops that stream and may arm a local microWakeWord detector if the server requested one.
+
+Firmware must not advertise `wakeWord` until it can actually run the detector. Once integrated, include `wakeWord` in `hello.capabilities`, provide model metadata in `hello.wakeWord.models`, and emit:
+
+```json
+{ "type": "event", "event": "wakeWord", "wakeWord": "Stacky", "modelId": "stacky", "score": 0.98 }
+```
+
+Do not hard-code `Stacky` as the only policy. It can be the default model, but the server chooses the active standby phrase/model via the `standby.wakeWord` payload.

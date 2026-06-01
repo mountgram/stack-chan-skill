@@ -216,7 +216,7 @@ static bool is_visible_status_mode(const char* mode)
 
 static lv_color_t status_color(const char* mode)
 {
-    if (mode && strcmp(mode, "connected") == 0) return lv_color_hex(0xFFD24A);
+    if (mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "standby") == 0)) return lv_color_hex(0xFFD24A);
     if (is_visible_status_mode(mode)) return lv_color_hex(0x35D0A4);
     return lv_color_hex(0xFF4D5E);
 }
@@ -555,6 +555,14 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         return;
     }
 
+    if (strcmp(type, "standby") == 0) {
+        const char* text = doc["text"] | "Standby. Tap to talk.";
+        _audio_streaming = false;
+        setStatus("standby", text);
+        sendAck(requestId);
+        return;
+    }
+
     if (strcmp(type, "captureImage") == 0) {
         captureAndSendCameraImage(requestId, doc["enhance"] | false);
         sendAck(requestId);
@@ -748,9 +756,9 @@ void AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
 void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
-    char buffer[640];
+    char buffer[1024];
     snprintf(buffer, sizeof(buffer),
-             R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+             R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
              id.c_str());
     sendJson(buffer);
 }
@@ -1151,7 +1159,7 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
         lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
     }
     if (_main_label) {
-        const bool show_main = mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
+        const bool show_main = mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "standby") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
         lv_label_set_text(_main_label, show_main && text ? text : "");
     }
     if (_log_label) {
