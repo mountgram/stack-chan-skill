@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Install the StackChan Skill so coding agents can set up firmware, a local brain server, and a Wi-Fi robot terminal without guessing secrets or hardware state." />
+  <title>StackChan Skill</title>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 15% 12%, rgba(255, 46, 203, 0.18), transparent 28rem),
+        radial-gradient(circle at 84% 8%, rgba(185, 255, 0, 0.18), transparent 24rem),
+        radial-gradient(circle at 78% 68%, rgba(34, 190, 255, 0.16), transparent 26rem),
+        #05070d;
+      color: #e8f3ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      line-height: 1.55;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 46, 203, 0.08), rgba(34, 190, 255, 0.04), rgba(185, 255, 0, 0.08));
+      background-size: 100% 4px, 100% 100%;
+      mix-blend-mode: screen;
+      opacity: 0.5;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 11;
+      background-image:
+        radial-gradient(circle at 10% 20%, #22beff 0 1px, transparent 1.5px),
+        radial-gradient(circle at 92% 38%, #ff2ecb 0 1px, transparent 1.5px),
+        radial-gradient(circle at 35% 88%, #b9ff00 0 1px, transparent 1.5px);
+      background-size: 8rem 9rem, 11rem 7rem, 9rem 12rem;
+      opacity: 0.42;
+      animation: static-drift 9s steps(8, end) infinite;
+    }
+    a { color: inherit; }
+    button, input, textarea { font: inherit; }
+    .page {
+      position: relative;
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 18px 0 56px;
+    }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 9;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 72px;
+      padding: 14px 0;
+      background: linear-gradient(180deg, rgba(5, 7, 13, 0.95), rgba(5, 7, 13, 0.72));
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(159, 215, 255, 0.22);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      color: #ffffff;
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      text-decoration: none;
+      text-shadow: 2px 0 #ff2ecb, -2px 0 #22beff;
+    }
+    .brand-mark { color: #ff2ecb; }
+    .skill-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 5px 10px;
+      background: #b9ff00;
+      color: #03100c;
+      font-size: 0.8rem;
+      font-weight: 900;
+      text-shadow: none;
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: clamp(10px, 2.4vw, 28px);
+      font-size: 0.9rem;
+      font-weight: 800;
+    }
+    .nav a {
+      color: #e8f3ff;
+      text-decoration: none;
+      opacity: 0.88;
+    }
+    .nav a:hover { color: #b9ff00; opacity: 1; }
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: #b9ff00;
+      color: #03100c !important;
+      box-shadow: 0 0 0 1px rgba(185, 255, 0, 0.72), 0 0 18px rgba(185, 255, 0, 0.32);
+      opacity: 1 !important;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.04fr) minmax(300px, 0.78fr);
+      gap: clamp(24px, 5vw, 58px);
+      align-items: center;
+      min-height: calc(100vh - 98px);
+      padding: clamp(44px, 8vw, 92px) 0 clamp(30px, 5vw, 60px);
+    }
+    .signal {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      margin: 0 0 20px;
+      color: #9fd7ff;
+      font-size: 0.88rem;
+      font-weight: 900;
+    }
+    .signal::before {
+      content: "";
+      width: 12px;
+      height: 12px;
+      background: #b9ff00;
+      box-shadow: 18px 0 #22beff, 36px 0 #ff2ecb;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 820px;
+      margin-bottom: 22px;
+      color: #ffffff;
+      font-size: clamp(3rem, 9vw, 6rem);
+      line-height: 0.95;
+      letter-spacing: -0.035em;
+      text-wrap: balance;
+      text-shadow: 3px 0 #ff2ecb, -3px 0 #22beff, 0 0 30px rgba(185, 255, 0, 0.14);
+    }
+    .hero-highlight {
+      display: inline-block;
+      color: #b9ff00;
+      text-decoration: underline;
+      text-decoration-color: #b9ff00;
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.08em;
+      transform: rotate(-1deg);
+    }
+    .lede {
+      max-width: 66ch;
+      margin-bottom: 28px;
+      color: #d7e8ff;
+      font-size: clamp(1.05rem, 2vw, 1.35rem);
+    }
+    .lede strong { color: #9fd7ff; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .prompt-actions { margin: 12px 0 0; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 48px;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      color: #03100c;
+      background: #b9ff00;
+      font-weight: 900;
+      text-decoration: none;
+      cursor: pointer;
+      box-shadow: 0 0 0 1px rgba(185, 255, 0, 0.75), 0 0 18px rgba(185, 255, 0, 0.26);
+    }
+    .button:hover { filter: brightness(1.08); }
+    .button:focus-visible, .copy-button:focus-visible, a:focus-visible {
+      outline: 3px solid #9fd7ff;
+      outline-offset: 4px;
+    }
+    .button.secondary {
+      color: #e8f3ff;
+      background: #26344f;
+      box-shadow: 0 0 0 1px rgba(159, 215, 255, 0.35);
+    }
+    .terminal-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: 650px;
+      border: 1px solid #223047;
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(5, 7, 13, 0.82);
+    }
+    .prompt { color: #b9ff00; font-weight: 900; }
+    code { color: #ffffff; word-break: break-word; }
+    .copy-button {
+      flex: 0 0 auto;
+      margin-left: auto;
+      border: 1px solid rgba(159, 215, 255, 0.45);
+      border-radius: 10px;
+      padding: 8px 10px;
+      color: #e8f3ff;
+      background: #101a2c;
+      cursor: pointer;
+    }
+    .copy-button[data-copied="true"] { color: #03100c; background: #35d0a4; }
+    .crt {
+      position: relative;
+      min-height: 430px;
+      border: 8px solid #1d2738;
+      border-radius: 22px;
+      background: #000000;
+      box-shadow: inset 0 0 0 1px #61708a, 0 28px 70px rgba(0, 0, 0, 0.62);
+      overflow: hidden;
+    }
+    .crt::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background:
+        linear-gradient(transparent 0 48%, rgba(185, 255, 0, 0.16) 49% 51%, transparent 52% 100%),
+        radial-gradient(circle at 50% 42%, rgba(34, 190, 255, 0.22), transparent 42%);
+      background-size: 100% 9px, 100% 100%;
+      opacity: 0.7;
+    }
+    .crt-screen {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 430px;
+      padding: 26px;
+      isolation: isolate;
+    }
+    .fire-art {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: saturate(1.08) contrast(1.06);
+      animation: twitch 4.5s steps(2, end) infinite;
+    }
+    .speech {
+      position: absolute;
+      top: 28px;
+      right: 18px;
+      max-width: 210px;
+      border: 1px solid #9fd7ff;
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(5, 7, 13, 0.88);
+      color: #ffffff;
+      transform: rotate(-4deg);
+      box-shadow: 0 0 20px rgba(34, 190, 255, 0.2);
+      z-index: 2;
+    }
+    .ticker {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 10px 14px;
+      background: #b9ff00;
+      color: #03100c;
+      font-weight: 900;
+      white-space: nowrap;
+      overflow: hidden;
+      z-index: 2;
+    }
+    .ticker span {
+      display: inline-block;
+      min-width: 100%;
+      animation: crawl 16s linear infinite;
+    }
+    .section {
+      margin-top: clamp(40px, 8vw, 86px);
+      border: 1px solid #223047;
+      border-radius: 16px;
+      padding: clamp(18px, 4vw, 34px);
+      background: linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(13, 18, 32, 0.94));
+    }
+    .section h2 {
+      margin-bottom: 14px;
+      color: #ffffff;
+      font-size: clamp(2rem, 5vw, 4rem);
+      line-height: 1;
+      letter-spacing: -0.03em;
+      text-wrap: balance;
+      text-shadow: 2px 0 #ff2ecb, -2px 0 #22beff;
+    }
+    .section-intro {
+      max-width: 72ch;
+      margin-bottom: 26px;
+      color: #d7e8ff;
+      font-size: 1.04rem;
+    }
+    .demo-grid, .install-grid, .split-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(300px, 1.1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+    .install-grid { align-items: start; }
+    .video-placeholder {
+      min-height: 300px;
+      border: 1px solid rgba(255, 46, 203, 0.5);
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        linear-gradient(135deg, rgba(255, 46, 203, 0.15), transparent 32%),
+        linear-gradient(315deg, rgba(34, 190, 255, 0.18), transparent 35%),
+        #05070d;
+      text-align: center;
+      box-shadow: inset 0 0 0 1px rgba(159, 215, 255, 0.12);
+    }
+    .video-placeholder strong {
+      display: block;
+      color: #b9ff00;
+      font-size: clamp(1.8rem, 4vw, 3.2rem);
+      line-height: 1;
+      text-shadow: 2px 0 #ff2ecb, -2px 0 #22beff;
+    }
+    .video-placeholder p {
+      max-width: 42ch;
+      margin: 14px auto 0;
+      color: #d7e8ff;
+    }
+    .bullet-stack {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .bullet-stack li {
+      border: 1px solid rgba(159, 215, 255, 0.25);
+      border-radius: 12px;
+      padding: 14px;
+      background: rgba(5, 7, 13, 0.62);
+    }
+    .bullet-stack strong { display: block; color: #9fd7ff; }
+    .install-card {
+      border: 1px solid rgba(185, 255, 0, 0.52);
+      border-radius: 16px;
+      padding: 18px;
+      background: #05070d;
+    }
+    .install-card h3 {
+      margin-bottom: 10px;
+      color: #b9ff00;
+      font-size: 1rem;
+    }
+    .install-card .terminal-line {
+      max-width: none;
+      margin-bottom: 14px;
+    }
+    .install-card .terminal-line code {
+      flex: 1 1 24ch;
+      min-width: 0;
+    }
+    .install-card .copy-button {
+      margin-left: 0;
+    }
+    .prompt-box {
+      width: 100%;
+      min-height: 280px;
+      resize: vertical;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px;
+      background: #000000;
+      color: #ffffff;
+      font-size: 0.86rem;
+      line-height: 1.5;
+    }
+    .idea-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .idea {
+      position: relative;
+      min-height: 170px;
+      border-radius: 16px;
+      padding: 18px;
+      background: #05070d;
+      overflow: hidden;
+    }
+    .idea:nth-child(1), .idea:nth-child(4) { border: 1px solid rgba(185, 255, 0, 0.55); }
+    .idea:nth-child(2), .idea:nth-child(5) { border: 1px solid rgba(34, 190, 255, 0.55); }
+    .idea:nth-child(3), .idea:nth-child(6) { border: 1px solid rgba(255, 46, 203, 0.55); }
+    .idea::after {
+      content: attr(data-icon);
+      position: absolute;
+      right: 12px;
+      bottom: -4px;
+      color: rgba(255, 255, 255, 0.08);
+      font-size: 4rem;
+      font-weight: 900;
+    }
+    .idea h3 {
+      position: relative;
+      margin-bottom: 10px;
+      color: #ffffff;
+      font-size: 1.05rem;
+      z-index: 1;
+    }
+    .idea p {
+      position: relative;
+      margin-bottom: 0;
+      color: #d7e8ff;
+      z-index: 1;
+    }
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+    .flow-step {
+      flex: 1 1 190px;
+      min-height: 110px;
+      border: 1px solid rgba(159, 215, 255, 0.32);
+      border-radius: 16px;
+      padding: 16px;
+      background: rgba(5, 7, 13, 0.7);
+    }
+    .flow-step strong { display: block; color: #b9ff00; }
+    .flow-arrow { color: #ff2ecb; font-size: 2rem; font-weight: 900; }
+    .demo-app {
+      border-color: rgba(34, 190, 255, 0.42);
+      background:
+        linear-gradient(135deg, rgba(34, 190, 255, 0.13), transparent 32%),
+        linear-gradient(315deg, rgba(185, 255, 0, 0.1), transparent 36%),
+        rgba(5, 7, 13, 0.88);
+    }
+    .app-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .app-console {
+      border: 1px solid rgba(185, 255, 0, 0.55);
+      border-radius: 16px;
+      padding: 18px;
+      background: #000000;
+      color: #b9ff00;
+      min-height: 100%;
+    }
+    .app-console p {
+      margin-bottom: 10px;
+    }
+    .module-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .module-list li {
+      border: 1px solid rgba(159, 215, 255, 0.25);
+      border-radius: 12px;
+      padding: 14px;
+      background: rgba(5, 7, 13, 0.72);
+      color: #d7e8ff;
+    }
+    .module-list strong {
+      display: block;
+      margin-bottom: 6px;
+      color: #9fd7ff;
+    }
+    .footer {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 34px;
+      padding-top: 24px;
+      border-top: 1px solid rgba(159, 215, 255, 0.22);
+      color: #c4d6ec;
+      font-size: 0.9rem;
+    }
+    .footer a { color: #9fd7ff; }
+    @keyframes static-drift {
+      0%, 100% { transform: translate3d(0, 0, 0); }
+      20% { transform: translate3d(-8px, 3px, 0); }
+      45% { transform: translate3d(6px, -4px, 0); }
+      70% { transform: translate3d(2px, 5px, 0); }
+    }
+    @keyframes twitch {
+      0%, 92%, 100% { transform: translate3d(0, 0, 0); filter: none; }
+      94% { transform: translate3d(4px, -2px, 0); filter: hue-rotate(34deg); }
+      96% { transform: translate3d(-3px, 1px, 0); filter: hue-rotate(-22deg); }
+    }
+    @keyframes crawl {
+      from { transform: translateX(100%); }
+      to { transform: translateX(-100%); }
+    }
+    @media (max-width: 900px) {
+      .topbar { position: static; align-items: flex-start; flex-direction: column; }
+      .nav { width: 100%; justify-content: space-between; overflow-x: auto; padding-bottom: 4px; }
+      .hero, .demo-grid, .install-grid, .split-grid, .app-grid { grid-template-columns: 1fr; }
+      .hero { min-height: auto; }
+      .crt, .crt-screen { min-height: 360px; }
+      .terminal-line { align-items: stretch; flex-direction: column; }
+      .copy-button { margin-left: 0; width: 100%; }
+      .flow-arrow { display: none; }
+    }
+    @media (max-width: 560px) {
+      .page { width: min(100% - 22px, 1180px); padding-bottom: 36px; }
+      .nav { font-size: 0.78rem; }
+      .brand { flex-wrap: wrap; }
+      h1 { font-size: clamp(2.45rem, 17vw, 4.2rem); }
+      .section { padding: 16px; }
+      .actions .button { width: 100%; }
+      .crt, .crt-screen { min-height: 300px; }
+      .speech { position: static; max-width: none; margin-bottom: 12px; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
+      body::after { opacity: 0.18; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar" aria-label="Site header">
+      <a class="brand" href="#top" aria-label="StackChan Skill home"><span class="brand-mark">{</span> stackchan <span class="brand-mark">}</span> <span class="skill-pill">SKILL</span></a>
+      <nav class="nav" aria-label="Main navigation">
+        <a href="#install">Install</a>
+        <a href="#demo">Demo</a>
+        <a href="#ideas">Chaos menu</a>
+        <a href="#demo-app">Demo app</a>
+        <a class="nav-cta" href="#install">Add to agent</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div>
+          <p class="signal">incoming robot terminal broadcast</p>
+          <h1 id="hero-title">Let agents <span class="hero-highlight">possess</span> your StackChan.</h1>
+          <p class="lede">Install one skill and your coding agent can set up the firmware path, local TypeScript brain server, WebSocket protocol, render simulator, voice hooks, and safety checks that turn StackChan into a tiny Wi-Fi robot terminal.</p>
+          <div class="actions">
+            <a class="button" href="#install">Install the skill</a>
+            <a class="button secondary" href="https://github.com/mountgram/stack-chan-skill">View GitHub repo</a>
+          </div>
+          <div class="terminal-line" aria-label="Install command">
+            <span class="prompt">$</span>
+            <code id="install-command">npx skills add mountgram/stack-chan-skill</code>
+            <button class="copy-button" type="button" data-copy-target="install-command">Copy command</button>
+          </div>
+        </div>
+        <div class="crt" aria-label="Pixel robot preview">
+          <div class="crt-screen">
+            <img class="fire-art" src="stackchan-breathes-fire.png" width="1400" height="1120" alt="StackChan robot breathing pixel fire with neon terminal overlays" />
+            <div class="speech">Agent connected. Skill ready. Fire mode optional.</div>
+            <div class="ticker"><span>build firmware | boot remote agent | open brain server | render face | blink at humans | prove what changed</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="demo" aria-labelledby="demo-title">
+        <div class="demo-grid">
+          <div>
+            <h2 id="demo-title">Demo video incoming.</h2>
+            <p class="section-intro">The clip will show the real loop: install the skill, let an agent inspect the repo, start a Bun brain server, drive rendered faces, and stop before hardware flashing until the serial port is confirmed.</p>
+            <ul class="bullet-stack">
+              <li><strong>No fake hardware wins.</strong> The skill tells agents to report what ran, what built, and what still needs a connected robot.</li>
+              <li><strong>No secret guessing.</strong> API keys, tokens, Wi-Fi credentials, LAN IPs, and provider choices stay in your own robot brain project.</li>
+              <li><strong>No personality lock-in.</strong> This is the reusable operating layer. Your robot's bit remains yours.</li>
+            </ul>
+          </div>
+          <div class="video-placeholder" role="img" aria-label="Placeholder for upcoming StackChan Skill demo video">
+            <div>
+              <strong>NO SIGNAL YET</strong>
+              <p>Demo tape goes here soon. For now, the install path is live and the robot gremlin energy is fully armed.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="works-title">
+        <h2 id="works-title">What it wires together.</h2>
+        <p class="section-intro">StackChan works best when the robot stays thin and the computer runs the smarter brain. The skill gives your coding agent the map, guardrails, starter code, and verification steps.</p>
+        <div class="flow" aria-label="Architecture flow">
+          <div class="flow-step"><strong>Coding agent</strong>Reads the skill, follows the references, edits only the needed project files.</div>
+          <div class="flow-arrow" aria-hidden="true">&gt;</div>
+          <div class="flow-step"><strong>StackChan firmware</strong>Adds the remote-agent app that connects over Wi-Fi and WebSocket.</div>
+          <div class="flow-arrow" aria-hidden="true">&gt;</div>
+          <div class="flow-step"><strong>Local brain server</strong>Runs Bun and TypeScript for AI, speech, tools, memory, render scenes, and command safety.</div>
+          <div class="flow-arrow" aria-hidden="true">&gt;</div>
+          <div class="flow-step"><strong>Tiny robot chaos</strong>Faces, voice, LEDs, servos, buttons, camera events, logs, and evidence.</div>
+        </div>
+      </section>
+
+      <section class="section" id="install" aria-labelledby="install-title">
+        <h2 id="install-title">Install it into your agent.</h2>
+        <p class="section-intro">Use the Skills CLI, then open your coding agent in the project where your robot brain should live. Ask it to use this skill before it touches firmware, server code, or hardware commands.</p>
+        <div class="install-grid">
+          <div class="install-card">
+            <h3>1. Add the skill</h3>
+            <div class="terminal-line">
+              <span class="prompt">$</span>
+              <code id="install-command-secondary">npx skills add mountgram/stack-chan-skill</code>
+              <button class="copy-button" type="button" data-copy-target="install-command-secondary">Copy command</button>
+            </div>
+            <p>Then open Claude Code, OpenCode, Codex, Cursor, or another skill-aware coding agent in your own robot brain project.</p>
+          </div>
+          <div class="install-card">
+            <h3>2. Start with this prompt</h3>
+            <textarea class="prompt-box" id="agent-prompt" readonly>Use the stack-chan-skill to help me build and hack on my StackChan.
+
+I am starting from here and want a local robot brain server that my StackChan can connect to over Wi-Fi.
+
+First, read the skill's SKILL.md and only the references needed for this setup. Then:
+
+1. Set up the StackChan firmware tooling inside the skill folder's vendor directory.
+2. Install ESP-IDF v5.5.4 into vendor/esp-idf if it is not already present.
+3. Clone the official StackChan firmware into vendor/StackChan if it is not already present.
+4. Add this skill's app_remote_agent firmware app to the local StackChan firmware.
+5. Patch and register the app as documented by the skill.
+6. Create or update a Bun and TypeScript brain server in this project that can receive the robot WebSocket connection.
+7. Tell me what environment variables I need to set, without inventing secrets or hard-coding my private LAN details.
+8. Build what can be built safely.
+9. Before flashing hardware, show me the serial port you plan to use and wait for my confirmation.
+10. At the end, tell me exactly what was changed, what was verified, and what still needs real hardware validation.</textarea>
+            <div class="actions prompt-actions">
+              <button class="copy-button" type="button" data-copy-target="agent-prompt">Copy starter prompt</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="ideas" aria-labelledby="ideas-title">
+        <h2 id="ideas-title">Why would you do this?</h2>
+        <p class="section-intro">Because a tiny robot with a local agent brain is a ridiculous, useful, slightly cursed interface for your desk. Start practical, then let the gremlin out.</p>
+        <div class="idea-grid">
+          <article class="idea" data-icon="01"><h3>Desk oracle</h3><p>Ask StackChan what your repo is doing, then make it blink sadly when tests fail.</p></article>
+          <article class="idea" data-icon="02"><h3>Servo rubber duck</h3><p>Explain a bug out loud while your robot looks left, right, and deeply concerned.</p></article>
+          <article class="idea" data-icon="03"><h3>CI goblin</h3><p>Let it cheer for green builds, grumble at flaky tests, and call out deploy drama.</p></article>
+          <article class="idea" data-icon="04"><h3>LAN greeter</h3><p>Make a tiny receptionist that sees button presses, speaks back, and routes requests to tools.</p></article>
+          <article class="idea" data-icon="05"><h3>Face lab</h3><p>Define 320 by 240 avatar scenes from JSON, then animate blinks, mouth movement, and moods.</p></article>
+          <article class="idea" data-icon="06"><h3>Incident mascot</h3><p>Give your on-call channel a physical witness that lights up only when evidence says something happened.</p></article>
+        </div>
+      </section>
+
+      <section class="section demo-app" id="demo-app" aria-labelledby="demo-app-title">
+        <h2 id="demo-app-title">A full-feature demo app is embedded.</h2>
+        <p class="section-intro">Agents do not have to begin from a blank folder. The skill ships a Bun and TypeScript starter at <code>assets/fullstack-agent/</code> that shows how a real StackChan brain server is put together.</p>
+        <div class="app-grid">
+          <div class="app-console" aria-label="Full-stack demo app path">
+            <p><span class="prompt">$</span> open assets/fullstack-agent/</p>
+            <p>&gt; routes: health, prompt, voice, render</p>
+            <p>&gt; device: registry, protocol, commands, safety tests</p>
+            <p>&gt; UI: debug terminal and render simulator</p>
+            <p>&gt; agent: tools, prompt, Stacky behavior hooks</p>
+            <p>&gt; voice: Deepgram live input, streaming TTS, wake-word hooks</p>
+          </div>
+          <ul class="module-list">
+            <li><strong>Brain server starter</strong>Agents can copy the server shape into your project, then adapt routes, tools, memory, and provider choices.</li>
+            <li><strong>Debug terminal</strong>A browser control panel for prompts, body commands, face presets, rendered faces, decorators, camera captures, state, and event logs.</li>
+            <li><strong>Render simulator</strong>A local 320 by 240 scene editor for JSON faces, animation tracks, bounds, presets, and device-send commands.</li>
+            <li><strong>Command safety</strong>Tests and helpers show agents how to validate device commands before they reach motors, audio, LEDs, or render state.</li>
+            <li><strong>Voice plumbing</strong>Deepgram live speech input and streaming TTS are included as working integration points, ready for your own keys.</li>
+            <li><strong>On-device wake word</strong>The firmware path has a place for local wake-word behavior so StackChan can listen for a trigger before handing speech to the brain server.</li>
+            <li><strong>Agent tools</strong>The demo app includes AI SDK tool wiring so StackChan can respond through real server-side actions instead of canned page tricks.</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>StackChan Skill, a tiny robot terminal starter kit for agent-assisted builders.</span>
+      <span><a href="https://github.com/mountgram/stack-chan-skill">Open the GitHub repository</a></span>
+    </footer>
+  </div>
+
+  <script>
+    const copyButtons = document.querySelectorAll('[data-copy-target]');
+    async function copyValue(id) {
+      const target = document.getElementById(id);
+      if (!target) return false;
+      const value = 'value' in target ? target.value : target.textContent;
+      try {
+        await navigator.clipboard.writeText(value.trim());
+        return true;
+      } catch (error) {
+        if (typeof target.select === 'function') {
+          target.select();
+          return false;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return false;
+      }
+    }
+    copyButtons.forEach((button) => {
+      const original = button.textContent;
+      button.addEventListener('click', async () => {
+        const copied = await copyValue(button.dataset.copyTarget);
+        button.dataset.copied = String(copied);
+        button.textContent = copied ? 'Copied' : 'Select text';
+        window.setTimeout(() => {
+          button.dataset.copied = 'false';
+          button.textContent = original;
+        }, 1800);
+      });
+    });
+  </script>
+</body>
+</html>
