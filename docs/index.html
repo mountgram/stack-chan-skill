@@ -326,18 +326,31 @@
     }
     .install-grid { align-items: start; }
     .video-placeholder {
+      width: 100%;
+      max-width: 430px;
       min-height: 300px;
+      justify-self: center;
+      align-self: start;
       border: 1px solid rgba(255, 46, 203, 0.5);
       border-radius: 16px;
       display: grid;
       place-items: center;
-      padding: 24px;
+      padding: 0;
       background:
         linear-gradient(135deg, rgba(255, 46, 203, 0.15), transparent 32%),
         linear-gradient(315deg, rgba(34, 190, 255, 0.18), transparent 35%),
         #05070d;
       text-align: center;
       box-shadow: inset 0 0 0 1px rgba(159, 215, 255, 0.12);
+      overflow: hidden;
+    }
+    .demo-video {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 9 / 16;
+      object-fit: cover;
+      background: #000000;
     }
     .video-placeholder strong {
       display: block;
@@ -497,6 +510,7 @@
       margin-bottom: 6px;
       color: #9fd7ff;
     }
+    .protocol-list { margin-top: 18px; }
     .footer {
       display: flex;
       flex-wrap: wrap;
@@ -561,7 +575,7 @@
       <a class="brand" href="#top" aria-label="StackChan Skill home"><span class="brand-mark">{</span> stackchan <span class="brand-mark">}</span> <span class="skill-pill">SKILL</span></a>
       <nav class="nav" aria-label="Main navigation">
         <a href="#install">Install</a>
-        <a href="#demo">Demo</a>
+        <a href="#demo">Clip</a>
         <a href="#ideas">Chaos menu</a>
         <a href="#demo-app">Demo app</a>
         <a class="nav-cta" href="#install">Add to agent</a>
@@ -596,19 +610,18 @@
       <section class="section" id="demo" aria-labelledby="demo-title">
         <div class="demo-grid">
           <div>
-            <h2 id="demo-title">Demo video incoming.</h2>
-            <p class="section-intro">The clip will show the real loop: install the skill, let an agent inspect the repo, start a Bun brain server, drive rendered faces, and stop before hardware flashing until the serial port is confirmed.</p>
+            <h2 id="demo-title">Real StackChan clip.</h2>
+            <p class="section-intro">A 22-second portrait tape of the real loop: StackChan hears the wake word, looks around, talks back, changes expression, and keeps the setup evidence visible instead of pretending the hardware is magic.</p>
             <ul class="bullet-stack">
               <li><strong>No fake hardware wins.</strong> The skill tells agents to report what ran, what built, and what still needs a connected robot.</li>
               <li><strong>No secret guessing.</strong> API keys, tokens, Wi-Fi credentials, LAN IPs, and provider choices stay in your own robot brain project.</li>
               <li><strong>No personality lock-in.</strong> This is the reusable operating layer. Your robot's bit remains yours.</li>
             </ul>
           </div>
-          <div class="video-placeholder" role="img" aria-label="Placeholder for upcoming StackChan Skill demo video">
-            <div>
-              <strong>NO SIGNAL YET</strong>
-              <p>Demo tape goes here soon. For now, the install path is live and the robot gremlin energy is fully armed.</p>
-            </div>
+          <div class="video-placeholder">
+            <video class="demo-video" controls preload="metadata" poster="stackchan-demo-video-portrait/poster.jpg" aria-label="Short StackChan Skill robot clip">
+              <source src="stackchan-demo-video-portrait/stackchan-skill-demo-portrait.mp4" type="video/mp4" />
+            </video>
           </div>
         </div>
       </section>
@@ -625,6 +638,12 @@
           <div class="flow-arrow" aria-hidden="true">&gt;</div>
           <div class="flow-step"><strong>Tiny robot chaos</strong>Faces, voice, LEDs, servos, buttons, camera events, logs, and evidence.</div>
         </div>
+        <ul class="module-list protocol-list" aria-label="WebSocket payload examples">
+          <li><strong>Tap and button events</strong>The firmware reports touches, button presses, wake state, connection changes, and telemetry.</li>
+          <li><strong>Face graphics and animations</strong>The brain can send 320 by 240 rendered face scenes, expression presets, decorators, and lightweight animation tracks.</li>
+          <li><strong>Audio in and out</strong>The robot can stream mic input to the brain, then receive speech or audio playback commands.</li>
+          <li><strong>Camera capture</strong>The firmware can send preview frames or captured images for debug UI and agent vision workflows.</li>
+        </ul>
       </section>
 
       <section class="section" id="install" aria-labelledby="install-title">
