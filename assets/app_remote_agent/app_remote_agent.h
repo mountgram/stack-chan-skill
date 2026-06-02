@@ -115,14 +115,17 @@ private:
     std::atomic_bool _audio_first_input_attempt_logged{false};
     std::atomic_bool _audio_playback_active{false};
     std::atomic_bool _audio_playback_cancel{false};
+    std::atomic_bool _camera_capture_active{false};
     std::atomic_bool _tasks_stopping{false};
     std::atomic<uint32_t> _audio_stream_started_at{0};
     std::atomic<uint32_t> _last_audio_frame_queued_at{0};
     std::atomic<uint32_t> _last_audio_frame_sent_at{0};
+    std::atomic<uint32_t> _last_audio_drop_log_at{0};
     std::atomic_int _volume{90};
     std::atomic_int _mic_audio_level{0};
     std::atomic_int _playback_audio_level{0};
     std::atomic_int _audio_input_failures{0};
+    std::atomic_int _audio_frame_drops{0};
     int _current_emotion             = 0;
     int _yaw                        = 0;
     int _pitch                      = 35;
@@ -130,6 +133,7 @@ private:
     std::string _render_scene_id;
     std::string _render_scene_json;
     std::vector<int16_t> _audio_input_chunk;
+    std::vector<uint8_t> _camera_preview_bmp;
     std::vector<RenderNodeRef> _render_nodes;
     uint32_t _render_animation_last_frame_at = 0;
     std::vector<RenderAnimationState> _render_animations;
@@ -171,9 +175,10 @@ private:
     void setLog(const char* text);
     bool ensureWakeWordDetector();
     void disarmWakeWord(uint32_t wait_ms = 0);
+    void releaseWakeWordDetector();
     void handleWakeWordDetected(const std::string& wake_word);
     bool captureAndSendAudioFrame();
-    bool captureAndSendCameraImage(const char* requestId, bool enhance);
+    bool captureAndSendCameraImage(const char* requestId, bool enhance, bool preview);
     bool queueAudioPlayback(const char* requestId, const char* url);
     void audioPlaybackLoop();
     void audioCaptureLoop();

@@ -44,7 +44,10 @@ static constexpr size_t MAX_RENDER_TRACKS = 32;
 static constexpr uint32_t AUDIO_START_TIMEOUT_MS = 2000;
 static constexpr size_t MIN_INTERNAL_SRAM_SPEAK = 8192;
 static constexpr size_t MIN_INTERNAL_SRAM_RENDER = 12288;
-static constexpr size_t MIN_INTERNAL_SRAM_CAMERA = 32768;
+static constexpr size_t MIN_INTERNAL_SRAM_CAMERA = 12288;
+static constexpr size_t MIN_INTERNAL_SRAM_CAMERA_ENHANCED = 32768;
+static constexpr int CAMERA_PREVIEW_WIDTH = 160;
+static constexpr int CAMERA_PREVIEW_HEIGHT = 120;
 
 static int clamp_int(int value, int min, int max)
 {
@@ -332,7 +335,7 @@ void AppRemoteAgent::connectWebSocket()
     _websocket->OnDisconnected([this]() {
         _connected = false;
         disarmWakeWord(500);
-        setStatus("offline", "Disconnected");
+        queueStatus("offline", "Disconnected");
     });
 
     _websocket->OnData([this](const char* data, size_t len, bool binary) {
@@ -403,11 +406,19 @@ void AppRemoteAgent::stopAudioTasks()
     if (_audio_frame_queue) {
         xQueueReset(_audio_frame_queue);
     }
+
+    const uint32_t started = xTaskGetTickCount();
+    while ((_audio_playback_task || _audio_capture_task) && xTaskGetTickCount() - started < pdMS_TO_TICKS(1500)) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     if (_audio_playback_task) {
+        mclog::tagInfo(TAG, "force deleting audio playback task");
         vTaskDelete(_audio_playback_task);
         _audio_playback_task = nullptr;
     }
     if (_audio_capture_task) {
+        mclog::tagInfo(TAG, "force deleting audio capture task");
         vTaskDelete(_audio_capture_task);
         _audio_capture_task = nullptr;
     }
@@ -456,7 +467,7 @@ void AppRemoteAgent::sendQueuedAudioFrames()
 {
     if (!_audio_frame_queue) return;
     AudioPcmFrame frame;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 24; ++i) {
         if (xQueueReceive(_audio_frame_queue, &frame, 0) != pdTRUE) return;
         if (frame.len > 0) {
             sendPacket(0x31, frame.data, frame.len);
@@ -527,7 +538,9 @@ void AppRemoteAgent::resetAudioStartState(const char* requestId)
     _audio_stream_started_at = now;
     _last_audio_frame_queued_at = 0;
     _last_audio_frame_sent_at = 0;
+    _last_audio_drop_log_at = 0;
     _audio_input_failures = 0;
+    _audio_frame_drops = 0;
     _audio_first_input_attempt_logged = false;
     if (_audio_frame_queue) {
         xQueueReset(_audio_frame_queue);
@@ -632,9 +645,10 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             sendError(requestId, "audio codec unavailable");
             return;
         }
-        mclog::tagInfo(TAG, "wake-word disarm start");
-        disarmWakeWord(500);
-        mclog::tagInfo(TAG, "wake-word disarm end");
+        mclog::tagInfo(TAG, "wake-word release start");
+        releaseWakeWordDetector();
+        mclog::tagInfo(TAG, "wake-word release end");
+        logHeap("after wake-word release");
         resetAudioStartState(requestId);
         _audio_streaming = true;
         mclog::tagInfo(TAG, "_audio_streaming = true");
@@ -670,11 +684,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "captureImage") == 0) {
-        if (_audio_streaming || _audio_playback_active) {
-            sendError(requestId, "camera unavailable during audio");
-            return;
-        }
-        if (!captureAndSendCameraImage(requestId, doc["enhance"] | false)) {
+        if (!captureAndSendCameraImage(requestId, doc["enhance"] | false, doc["preview"] | false)) {
             return;
         }
         sendAck(requestId);
@@ -1366,6 +1376,13 @@ void AppRemoteAgent::disarmWakeWord(uint32_t wait_ms)
     }
 }
 
+void AppRemoteAgent::releaseWakeWordDetector()
+{
+    if (!_wake_word_detector) return;
+    _wake_word_detector->shutdown();
+    _wake_word_detector.reset();
+}
+
 void AppRemoteAgent::handleWakeWordDetected(const std::string& wake_word)
 {
     _audio_streaming = false;
@@ -1384,7 +1401,7 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
 
     auto audio_codec = Board::GetInstance().GetAudioCodec();
     if (!audio_codec) {
-        setStatus("error", "Audio codec unavailable");
+        queueStatus("error", "Audio codec unavailable");
         _audio_streaming = false;
         failPendingAudioStart("audio codec unavailable");
         return false;
@@ -1418,8 +1435,14 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
     }
     const int average = static_cast<int>(total / chunk_frames);
     _mic_audio_level = smooth_level_1000(_mic_audio_level.load(), clamp_int((average * 1000) / 12000, 0, 1000));
-    if (xQueueSend(_audio_frame_queue, &frame, 0) != pdTRUE) {
+    if (xQueueSend(_audio_frame_queue, &frame, pdMS_TO_TICKS(5)) != pdTRUE) {
         _audio_input_failures++;
+        _audio_frame_drops++;
+        const uint32_t now = GetHAL().millis();
+        if (now - _last_audio_drop_log_at.load() > 1000) {
+            _last_audio_drop_log_at = now;
+            mclog::tagInfo(TAG, "audio frame queue full drops={}", _audio_frame_drops.load());
+        }
         return false;
     }
     if (_last_audio_frame_queued_at.load() == 0) {
@@ -1471,6 +1494,19 @@ void AppRemoteAgent::audioCaptureLoop()
     bool input_enabled = false;
     while (!_tasks_stopping) {
         if (_audio_streaming) {
+            if (_camera_capture_active) {
+                if (input_enabled) {
+                    auto audio_codec = Board::GetInstance().GetAudioCodec();
+                    if (audio_codec && audio_codec->input_enabled()) {
+                        mclog::tagInfo(TAG, "EnableInput(false) start for camera capture");
+                        audio_codec->EnableInput(false);
+                        mclog::tagInfo(TAG, "EnableInput(false) end for camera capture");
+                    }
+                    input_enabled = false;
+                }
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
             if (!input_enabled) {
                 mclog::tagInfo(TAG, "audio capture loop sees streaming true");
                 auto audio_codec = Board::GetInstance().GetAudioCodec();
@@ -1531,21 +1567,26 @@ void AppRemoteAgent::audioCaptureLoop()
     vTaskDelete(nullptr);
 }
 
-bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhance)
+bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhance, bool preview)
 {
     logHeap("before captureImage");
-    if (!hasInternalSram(MIN_INTERNAL_SRAM_CAMERA, "captureImage")) {
+    _camera_capture_active = true;
+    const size_t camera_sram = (enhance && !preview) ? MIN_INTERNAL_SRAM_CAMERA_ENHANCED : MIN_INTERNAL_SRAM_CAMERA;
+    if (!hasInternalSram(camera_sram, "captureImage")) {
+        _camera_capture_active = false;
         sendError(requestId, "low memory for camera capture");
         return false;
     }
     auto camera = hal_bridge::board_get_camera();
     if (!camera) {
+        _camera_capture_active = false;
         sendError(requestId, "camera unavailable");
         return false;
     }
 
     for (int i = 0; i < 4; ++i) {
         if (!camera->StreamCaptures()) {
+            _camera_capture_active = false;
             sendError(requestId, "camera capture failed");
             return false;
         }
@@ -1559,6 +1600,115 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
     int width                = camera->GetFrameWidth();
     int height               = camera->GetFrameHeight();
     int format               = camera->GetFrameFormat();
+
+    if (preview && (format == V4L2_PIX_FMT_YUYV || format == V4L2_PIX_FMT_GREY)) {
+        const bool color_preview = enhance && format == V4L2_PIX_FMT_YUYV;
+        const int bytes_per_pixel = color_preview ? 3 : 1;
+        const int row_stride = ((CAMERA_PREVIEW_WIDTH * bytes_per_pixel) + 3) & ~3;
+        const size_t header_size = color_preview ? 14 + 40 : 14 + 40 + 256 * 4;
+        const size_t image_size = row_stride * CAMERA_PREVIEW_HEIGHT;
+        const size_t file_size = header_size + image_size;
+        _camera_preview_bmp.assign(file_size, 0);
+
+        uint8_t min_luma = 255;
+        uint8_t max_luma = 0;
+        if (enhance) {
+            if (format == V4L2_PIX_FMT_GREY) {
+                for (size_t i = 0; i < frameSize; ++i) {
+                    min_luma = std::min(min_luma, frameData[i]);
+                    max_luma = std::max(max_luma, frameData[i]);
+                }
+            } else {
+                for (size_t i = 0; i + 2 < frameSize; i += 4) {
+                    min_luma = std::min(min_luma, frameData[i]);
+                    max_luma = std::max(max_luma, frameData[i]);
+                    min_luma = std::min(min_luma, frameData[i + 2]);
+                    max_luma = std::max(max_luma, frameData[i + 2]);
+                }
+            }
+        }
+        const int luma_range = max_luma > min_luma ? max_luma - min_luma : 0;
+
+        auto put16 = [this](size_t offset, uint16_t value) {
+            _camera_preview_bmp[offset] = value & 0xff;
+            _camera_preview_bmp[offset + 1] = (value >> 8) & 0xff;
+        };
+        auto put32 = [this](size_t offset, uint32_t value) {
+            _camera_preview_bmp[offset] = value & 0xff;
+            _camera_preview_bmp[offset + 1] = (value >> 8) & 0xff;
+            _camera_preview_bmp[offset + 2] = (value >> 16) & 0xff;
+            _camera_preview_bmp[offset + 3] = (value >> 24) & 0xff;
+        };
+
+        _camera_preview_bmp[0] = 'B';
+        _camera_preview_bmp[1] = 'M';
+        put32(2, file_size);
+        put32(10, header_size);
+        put32(14, 40);
+        put32(18, CAMERA_PREVIEW_WIDTH);
+        put32(22, CAMERA_PREVIEW_HEIGHT);
+        put16(26, 1);
+        put16(28, color_preview ? 24 : 8);
+        put32(34, image_size);
+        if (!color_preview) {
+            for (int i = 0; i < 256; ++i) {
+                const size_t offset = 14 + 40 + i * 4;
+                _camera_preview_bmp[offset] = i;
+                _camera_preview_bmp[offset + 1] = i;
+                _camera_preview_bmp[offset + 2] = i;
+            }
+        }
+
+        for (int y = 0; y < CAMERA_PREVIEW_HEIGHT; ++y) {
+            const int src_y = (y * height) / CAMERA_PREVIEW_HEIGHT;
+            uint8_t* row = _camera_preview_bmp.data() + header_size + (CAMERA_PREVIEW_HEIGHT - 1 - y) * row_stride;
+            for (int x = 0; x < CAMERA_PREVIEW_WIDTH; ++x) {
+                const int src_x = (x * width) / CAMERA_PREVIEW_WIDTH;
+                uint8_t luma = 0;
+                if (format == V4L2_PIX_FMT_GREY) {
+                    const size_t index = static_cast<size_t>(src_y) * width + src_x;
+                    if (index < frameSize) luma = frameData[index];
+                } else {
+                    const size_t pixel = static_cast<size_t>(src_y) * width + src_x;
+                    const size_t index = (pixel / 2) * 4 + (src_x % 2 == 0 ? 0 : 2);
+                    if (index < frameSize) luma = frameData[index];
+                }
+                const uint8_t adjusted_luma = luma_range > 0 ? ((luma - min_luma) * 255) / luma_range : luma;
+                if (color_preview) {
+                    const size_t pixel = static_cast<size_t>(src_y) * width + src_x;
+                    const size_t index = (pixel / 2) * 4;
+                    const int u = index + 1 < frameSize ? frameData[index + 1] - 128 : 0;
+                    const int v = index + 3 < frameSize ? frameData[index + 3] - 128 : 0;
+                    const int yv = adjusted_luma;
+                    row[x * 3] = clamp_int((298 * yv + 516 * u + 128) >> 8, 0, 255);
+                    row[x * 3 + 1] = clamp_int((298 * yv - 100 * u - 208 * v + 128) >> 8, 0, 255);
+                    row[x * 3 + 2] = clamp_int((298 * yv + 409 * v + 128) >> 8, 0, 255);
+                } else {
+                    row[x] = adjusted_luma;
+                }
+            }
+        }
+
+        char event[256];
+        int event_len = snprintf(event, sizeof(event),
+                                 R"({"type":"event","event":"cameraImage","requestId":"%s","width":%d,"height":%d,"mediaType":"image/bmp","bytes":%u})",
+                                 requestId ? requestId : "", CAMERA_PREVIEW_WIDTH, CAMERA_PREVIEW_HEIGHT,
+                                 static_cast<unsigned>(_camera_preview_bmp.size()));
+        if (event_len <= 0 || event_len >= (int)sizeof(event)) {
+            _camera_capture_active = false;
+            sendError(requestId, "camera metadata failed");
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(_send_mutex);
+        if (_websocket && _websocket->IsConnected()) {
+            _websocket->Send(event, event_len, false);
+            _websocket->Send(_camera_preview_bmp.data(), _camera_preview_bmp.size(), true);
+        }
+        _camera_capture_active = false;
+        logHeap("after captureImage preview");
+        return true;
+    }
 
     std::vector<uint8_t> adjusted_frame;
     if (enhance && format == V4L2_PIX_FMT_YUYV) {
@@ -1575,33 +1725,29 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
     size_t jpeg_len    = 0;
     if (!image_to_jpeg((uint8_t*)frameData, frameSize, width, height, (v4l2_pix_fmt_t)format, 80, &jpeg_data, &jpeg_len) ||
         !jpeg_data) {
+        _camera_capture_active = false;
         sendError(requestId, "jpeg encode failed");
         return false;
     }
 
-    char meta[192];
-    int meta_len = snprintf(meta, sizeof(meta), R"({"requestId":"%s","width":%d,"height":%d,"mediaType":"image/jpeg"})",
-                            requestId ? requestId : "", width, height);
-    if (meta_len <= 0 || meta_len >= (int)sizeof(meta)) {
+    char event[256];
+    int event_len = snprintf(event, sizeof(event),
+                             R"({"type":"event","event":"cameraImage","requestId":"%s","width":%d,"height":%d,"mediaType":"image/jpeg","bytes":%u})",
+                             requestId ? requestId : "", width, height, static_cast<unsigned>(jpeg_len));
+    if (event_len <= 0 || event_len >= (int)sizeof(event)) {
         free(jpeg_data);
+        _camera_capture_active = false;
         sendError(requestId, "camera metadata failed");
         return false;
     }
 
-    std::vector<uint8_t> packet;
-    packet.reserve(5 + meta_len + jpeg_len);
-    packet.push_back(0x32);
-    packet.push_back((meta_len >> 24) & 0xff);
-    packet.push_back((meta_len >> 16) & 0xff);
-    packet.push_back((meta_len >> 8) & 0xff);
-    packet.push_back(meta_len & 0xff);
-    packet.insert(packet.end(), meta, meta + meta_len);
-    packet.insert(packet.end(), jpeg_data, jpeg_data + jpeg_len);
     std::lock_guard<std::mutex> lock(_send_mutex);
     if (_websocket && _websocket->IsConnected()) {
-        _websocket->Send(packet.data(), packet.size(), true);
+        _websocket->Send(event, event_len, false);
+        _websocket->Send(jpeg_data, jpeg_len, true);
     }
     free(jpeg_data);
+    _camera_capture_active = false;
     logHeap("after captureImage");
     return true;
 }
@@ -1691,6 +1837,7 @@ void AppRemoteAgent::onClose()
     _opened = false;
     _audio_start_pending = false;
     _audio_playback_active = false;
+    _camera_capture_active = false;
     if (_wake_word_detector) {
         _wake_word_detector->shutdown();
         _wake_word_detector.reset();
@@ -1698,6 +1845,7 @@ void AppRemoteAgent::onClose()
     stopAudioTasks();
     _audio_streaming = false;
     _websocket.reset();
+    clearRenderScene();
     LvglLockGuard lock;
     view::destroy_home_indicator();
     if (_root) {
@@ -1707,6 +1855,7 @@ void AppRemoteAgent::onClose()
     _status_dot   = nullptr;
     _main_label   = nullptr;
     _log_label    = nullptr;
+    _decorator_ids.clear();
     GetStackChan().resetAvatar();
 }
 
