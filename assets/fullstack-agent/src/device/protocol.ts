@@ -57,7 +57,7 @@ export type WakeWordConfig = {
   modelUrl?: string;
 };
 export type StandbyCommand = { type: "standby"; requestId: string; text?: string; wakeWord?: WakeWordConfig };
-export type CaptureImageCommand = { type: "captureImage"; requestId: string; enhance?: boolean };
+export type CaptureImageCommand = { type: "captureImage"; requestId: string; enhance?: boolean; preview?: boolean };
 export type VolumeCommand = { type: "volume"; requestId: string; volume: number };
 export type StopCommand = { type: "stop"; requestId: string; target?: "all" | "speech" | "motion" };
 export type HomeCommand = { type: "home"; requestId: string };

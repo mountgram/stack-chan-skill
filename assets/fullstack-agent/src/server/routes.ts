@@ -33,6 +33,7 @@ let lastTapAt = 0;
 let conversationGeneration = 0;
 const conversationMessages: ModelMessage[] = [];
 const liveAudioStreams = new Map<string, ReadableStream<Uint8Array>>();
+let pendingCameraImage: { requestId: string; mediaType: string; width?: number; height?: number } | undefined;
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeout: Timer | undefined;
@@ -49,6 +50,13 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 }
 
 function handleBinaryDeviceMessage(bytes: Uint8Array) {
+  if (pendingCameraImage) {
+    const meta = pendingCameraImage;
+    pendingCameraImage = undefined;
+    registry.handleCameraImage({ ...meta, data: bytes });
+    return true;
+  }
+
   if (bytes.length < 5) return false;
   const type = bytes[0];
   const length = ((bytes[1] ?? 0) << 24) | ((bytes[2] ?? 0) << 16) | ((bytes[3] ?? 0) << 8) | (bytes[4] ?? 0);
@@ -431,7 +439,7 @@ export function createServer() {
           if (type === "home") return json(device.home());
           if (type === "stop") return json(device.stop());
           if (type === "speak") return json(device.speak(String(body.text ?? ""), typeof body.audioUrl === "string" ? body.audioUrl : undefined));
-          if (type === "captureImage") return json(device.captureImage(undefined, Boolean(body.enhance)));
+          if (type === "captureImage") return json(device.captureImage(undefined, Boolean(body.enhance), Boolean(body.preview)));
           if (type === "volume") return json(device.volume(Number(body.volume ?? registry.getVolume())));
           if (type === "startAudio") return json(await startConversation());
           if (type === "stopAudio") return json(await stopConversation());
@@ -483,6 +491,15 @@ export function createServer() {
             const event = (parsed as { event?: string }).event;
             if (event === "speechDone") handleSpeechDone();
             if (event === "tap") handleTap();
+            if (event === "cameraImage") {
+              const camera = parsed as { requestId?: string; mediaType?: string; width?: number; height?: number };
+              pendingCameraImage = {
+                requestId: camera.requestId ?? "",
+                mediaType: camera.mediaType ?? "image/jpeg",
+                width: camera.width,
+                height: camera.height,
+              };
+            }
             if (event === "wakeWord") {
               startConversation().catch((error) => {
                 registry.handleDeviceMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });

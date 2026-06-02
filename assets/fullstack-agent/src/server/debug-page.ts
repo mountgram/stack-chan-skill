@@ -128,8 +128,8 @@ export function debugPage() {
     $('volume').onchange = () => api('/api/command', { type: 'volume', volume: Number($('volume').value) });
     $('home').onclick = () => api('/api/command', { type: 'home' });
     $('stop').onclick = () => api('/api/command', { type: 'stop' });
-    $('captureImage').onclick = () => api('/api/command', { type: 'captureImage' });
-    $('captureEnhancedImage').onclick = () => api('/api/command', { type: 'captureImage', enhance: true });
+    $('captureImage').onclick = () => api('/api/command', { type: 'captureImage', preview: true });
+    $('captureEnhancedImage').onclick = () => api('/api/command', { type: 'captureImage', enhance: true, preview: true });
     document.querySelectorAll('[data-decorator]').forEach(btn => btn.onclick = () => api('/api/command', { type: 'decorator', action: 'add', name: btn.dataset.decorator, durationMs: 3000 }));
     $('clearDecorators').onclick = () => api('/api/command', { type: 'decorator', action: 'clear' });
     $('sendAvatarJson').onclick = () => {

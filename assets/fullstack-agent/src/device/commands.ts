@@ -40,8 +40,8 @@ export function standby(text = "Standby. Tap to talk.", wakeWord?: WakeWordConfi
   return registry.send({ type: "standby", requestId: commandId(), text: text.slice(0, 180), wakeWord });
 }
 
-export function captureImage(requestId = commandId("img"), enhance = false) {
-  return registry.send({ type: "captureImage", requestId, enhance });
+export function captureImage(requestId = commandId("img"), enhance = false, preview = false) {
+  return registry.send({ type: "captureImage", requestId, enhance, preview });
 }
 
 export function volume(value: number) {

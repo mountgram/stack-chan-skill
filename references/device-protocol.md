@@ -7,7 +7,7 @@ Read this when implementing firmware or server messages.
 - Device connects to server WebSocket: `/stacky/device`.
 - Auth can use `?token=...` or an `x-stacky-token` header.
 - JSON text frames carry commands and events.
-- Binary frames carry PCM audio or JPEG camera payloads.
+- Binary frames carry PCM audio or raw camera image payloads.
 
 ## Device To Server JSON
 
@@ -17,6 +17,7 @@ Read this when implementing firmware or server messages.
 { "type": "telemetry", "battery": 82, "charging": true, "wifiRssi": -55, "pose": { "yaw": 0, "pitch": 35 } }
 { "type": "event", "event": "tap", "at": 123456 }
 { "type": "event", "event": "wakeWord", "wakeWord": "Stacky", "modelId": "stacky", "score": 0.98, "at": 123456 }
+{ "type": "event", "event": "cameraImage", "requestId": "img-1", "width": 160, "height": 120, "mediaType": "image/bmp", "bytes": 57654 }
 { "type": "event", "event": "speechDone" }
 { "type": "ack", "requestId": "cmd-1", "ok": true }
 { "type": "error", "requestId": "cmd-2", "message": "pitch out of range" }
@@ -33,7 +34,8 @@ Read this when implementing firmware or server messages.
 { "type": "startAudio", "requestId": "cmd-6" }
 { "type": "stopAudio", "requestId": "cmd-7" }
 { "type": "standby", "requestId": "cmd-8", "text": "Standby. Say \"Stacky\".", "wakeWord": { "enabled": true, "phrase": "Stacky", "modelId": "stacky" } }
-{ "type": "captureImage", "requestId": "img-1", "enhance": false }
+{ "type": "captureImage", "requestId": "img-1", "enhance": false, "preview": true }
+{ "type": "captureImage", "requestId": "img-2", "enhance": true, "preview": true }
 { "type": "stop", "requestId": "cmd-9", "target": "all" }
 { "type": "home", "requestId": "cmd-10" }
 { "type": "ping", "requestId": "cmd-11", "at": 123456 }
@@ -64,7 +66,7 @@ Read this when implementing firmware or server messages.
 
 ## Binary Frames
 
-Binary frames start with:
+Packetized binary frames start with:
 
 ```text
 byte 0: packet type
@@ -75,13 +77,34 @@ bytes 5..: payload
 | Type | Direction | Payload |
 |---|---|---|
 | `0x31` | device to server | 16-bit little-endian mono PCM audio chunk. |
-| `0x32` | device to server | JSON metadata of length `N`, followed by JPEG bytes. |
+| raw binary after `cameraImage` event | device to server | Image bytes described by the immediately preceding `cameraImage` JSON event. |
+| `0x32` | device to server | Legacy camera packet: JSON metadata of length `N`, followed by image bytes. |
 
 Camera metadata example:
 
 ```json
 { "requestId": "img-1", "width": 320, "height": 240, "mediaType": "image/jpeg" }
 ```
+
+## Camera Capture Semantics
+
+Prefer `preview: true` for debug UI camera buttons and other casual captures. The reusable firmware preview path avoids JPEG encoding to reduce SRAM pressure during voice interactions.
+
+Current preview behavior:
+
+- `captureImage` with `preview: true, enhance: false` returns a small 8-bit grayscale BMP preview, usually `160x120` and about `20278` bytes.
+- `captureImage` with `preview: true, enhance: true` returns a low-memory enhanced BMP preview. If the camera source frame is YUYV, this is a 24-bit color BMP, usually `160x120` and about `57654` bytes. If the camera source is GREY, the result is necessarily grayscale.
+- `captureImage` with `preview: false` may use the JPEG path. Reserve that for agent vision paths that need full quality and can tolerate higher memory use; it may fail with `low memory for camera capture` while audio, wake-word, rendering, or speech resources are active.
+
+Servers should handle the modern camera protocol by pairing a JSON event like:
+
+```json
+{ "type": "event", "event": "cameraImage", "requestId": "img-1", "width": 160, "height": 120, "mediaType": "image/bmp", "bytes": 57654 }
+```
+
+with the next binary WebSocket message as the image bytes. Keep legacy `0x32` parsing only for older firmware compatibility.
+
+To avoid interleaving and memory pressure, servers should allow only one active camera request at a time. It is also reasonable to deny debug camera capture in standby if wake-word standby is armed; capture during active voice can work when serialized.
 
 ## Wake-Word Standby
 

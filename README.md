@@ -20,7 +20,7 @@ You are here because you want Claude Code, OpenCode, Codex, etc to help you:
 
 - run a local AI brain server
 - make the robot connect to that server over Wi-Fi
-- hack on robot behaviors like faces, speech, movement, lights, audio, tools, and personality
+- hack on robot behaviors like faces, speech, movement, lights, audio, camera, tools, and personality
 - define custom rendered avatar faces and lightweight animations from the server
 - add server-selected standby behavior, including tap-to-talk and local wake-word detection
 
@@ -101,6 +101,8 @@ Render animations are intentionally ESP32-friendly:
 This lets the server say "scale the mouth with playback level" once, without sending per-frame mouth updates over WebSocket.
 
 Wake-word detection follows the same thin-terminal boundary. The server owns policy: it sends `standby` with no wake-word config for tap-only standby, or with a `wakeWord` request when it wants the robot to arm a compiled local microWakeWord model. The firmware only advertises `wakeWord` after the detector exists and can run on the target hardware.
+
+Camera capture is designed around ESP32 memory pressure. Debug UI captures should send `preview: true`; plain preview is a small grayscale BMP, while enhanced preview uses a low-memory color BMP when the camera source supports color. Full JPEG capture remains possible for higher-quality agent vision paths, but it can fail under audio/wake-word/speech load and should not be the default debug button behavior.
 
 You do not need to understand all the firmware tooling before getting started. The agent uses this skill to handle those details and should explain hardware or setup blockers in plain language.
 
