@@ -334,6 +334,17 @@ void AppRemoteAgent::connectWebSocket()
 
     _websocket->OnDisconnected([this]() {
         _connected = false;
+        _audio_streaming = false;
+        _audio_playback_cancel = true;
+        failPendingAudioStart("connection closed before audio capture started");
+        if (_audio_frame_queue) {
+            xQueueReset(_audio_frame_queue);
+        }
+        if (_audio_playback_queue) {
+            xQueueReset(_audio_playback_queue);
+        }
+        _mic_audio_level = 0;
+        _playback_audio_level = 0;
         disarmWakeWord(500);
         queueStatus("offline", "Disconnected");
     });
@@ -708,7 +719,6 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             xQueueReset(_audio_frame_queue);
         }
         mclog::tagInfo(TAG, "_audio_streaming = false");
-        setStatus("thinking", "Mic stopped");
         sendAck(requestId);
         return;
     }
@@ -1796,6 +1806,7 @@ void AppRemoteAgent::playAudioUrl(const char* url)
     samples.reserve(1024);
     bool has_pending_byte = false;
     uint8_t pending_byte  = 0;
+    bool speech_start_sent = false;
     while (!_audio_playback_cancel && !_tasks_stopping) {
         int read = esp_http_client_read(client, reinterpret_cast<char*>(bytes.data()), bytes.size());
         if (read <= 0) break;
@@ -1816,6 +1827,10 @@ void AppRemoteAgent::playAudioUrl(const char* url)
         if (!samples.empty()) {
             _playback_audio_level = smooth_level_1000(_playback_audio_level.load(), pcm_level_1000(samples));
             audio_codec->OutputData(samples);
+            if (!speech_start_sent) {
+                speech_start_sent = true;
+                sendJson(R"({"type":"event","event":"speechStart"})");
+            }
         }
         GetHAL().feedTheDog();
         vTaskDelay(1);
