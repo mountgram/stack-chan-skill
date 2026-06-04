@@ -659,6 +659,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "standby") == 0) {
         const char* text = doc["text"] | "Standby. Tap to talk.";
+        clearRenderScene();
         _audio_streaming = false;
         failPendingAudioStart("audio capture stopped before start");
         if (doc["wakeWord"].is<ArduinoJson::JsonObject>()) {
