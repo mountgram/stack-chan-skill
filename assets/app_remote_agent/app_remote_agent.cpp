@@ -1806,7 +1806,8 @@ void AppRemoteAgent::playAudioUrl(const char* url)
     samples.reserve(1024);
     bool has_pending_byte = false;
     uint8_t pending_byte  = 0;
-    bool speech_start_sent = false;
+    uint32_t playback_started_at = 0;
+    size_t playback_samples = 0;
     while (!_audio_playback_cancel && !_tasks_stopping) {
         int read = esp_http_client_read(client, reinterpret_cast<char*>(bytes.data()), bytes.size());
         if (read <= 0) break;
@@ -1825,15 +1826,24 @@ void AppRemoteAgent::playAudioUrl(const char* url)
             has_pending_byte = true;
         }
         if (!samples.empty()) {
-            _playback_audio_level = smooth_level_1000(_playback_audio_level.load(), pcm_level_1000(samples));
-            audio_codec->OutputData(samples);
-            if (!speech_start_sent) {
-                speech_start_sent = true;
+            if (playback_started_at == 0) {
+                playback_started_at = GetHAL().millis();
                 sendJson(R"({"type":"event","event":"speechStart"})");
             }
+            playback_samples += samples.size();
+            _playback_audio_level = smooth_level_1000(_playback_audio_level.load(), pcm_level_1000(samples));
+            audio_codec->OutputData(samples);
         }
         GetHAL().feedTheDog();
         vTaskDelay(1);
+    }
+    if (playback_started_at > 0) {
+        const uint32_t expected_ms = static_cast<uint32_t>(playback_samples / 24);
+        const uint32_t elapsed_ms = GetHAL().millis() - playback_started_at;
+        if (expected_ms > elapsed_ms) {
+            const uint32_t remaining_ms = expected_ms - elapsed_ms;
+            vTaskDelay(pdMS_TO_TICKS(std::min<uint32_t>(remaining_ms, 3000)));
+        }
     }
     _playback_audio_level = 0;
     mclog::tagInfo(TAG, "EnableOutput(false) start");
