@@ -1,0 +1,3 @@
+launch_assets/*.mov
+outputs/*.mp4
+!outputs/stackchan-launch-twitter-v11-h264.mp4

@@ -1,0 +1,1 @@
+I'm releasing a skill that lets you possess your StackChan. It can move: left, right, up, down. And the wake word runs on-device.
