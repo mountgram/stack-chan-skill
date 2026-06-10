@@ -77,7 +77,7 @@ export class DeepgramStreamingTts {
     await this.connection.waitForOpen();
   }
 
-  speakStream(textChunks: AsyncIterable<string>): { id: string; url: string; stream: ReadableStream<Uint8Array>; started: Promise<void>; text: Promise<string>; done: Promise<void> } {
+  speakStream(textChunks: AsyncIterable<string>): { id: string; stream: ReadableStream<Uint8Array>; started: Promise<void>; text: Promise<string>; done: Promise<void> } {
     if (!this.connection) throw new Error("TTS not started");
 
     const id = `tts-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.pcm`;
@@ -156,7 +156,7 @@ export class DeepgramStreamingTts {
       }
     })();
 
-    return { id, url: new URL(`/audio/${id}`, config.publicBaseUrl).toString(), stream, started, text, done };
+    return { id, stream, started, text, done };
   }
 
   close() {

@@ -12,7 +12,7 @@ Read this when StackChan setup, firmware, or server integration fails.
 | `AppRemoteAgent` unknown in `main.cpp` | `apps.h` does not include the app header. | Add `#include "app_remote_agent/app_remote_agent.h"` to `apps.h`. |
 | App builds but is missing from launcher | `main.cpp` does not install the app. | Add `GetMooncake().installApp(std::make_unique<AppRemoteAgent>());`. |
 | Brain connects to wrong device | `STACKY_DEVICE_WS_URL` points at the wrong host or stale IP. | Set `STACKY_DEVICE_WS_URL=ws://STACKCHAN_HOST:6001/stacky/device` and restart the brain server. |
-| Firmware cannot reach audio URLs | Server uses `localhost` or unreachable host in `STACKY_PUBLIC_BASE_URL`. | Set `STACKY_PUBLIC_BASE_URL` to a LAN-reachable URL. |
+| TTS playback never starts | Server did not send `speak` with `audioTransport: "websocket"`, the device disconnected, or binary playback packets were not sent. | Verify `STACKY_DEVICE_WS_URL`, then inspect server logs for `device speak start`, packet send errors, and firmware logs for `websocket playback start`. |
 | WebSocket never connects | StackChan is not on Wi-Fi, `REMOTE.AGENT` is not open, or HTTPD WebSocket support was not enabled in firmware. | Open `REMOTE.AGENT`, confirm the on-device waiting indicator, and rebuild with `CONFIG_HTTPD_WS_SUPPORT=y`. |
 | Motion is jerky or unsafe | Server sends frequent/raw model values. | Clamp in server, rely on firmware clamps, and rate-limit commands. |
 | Flash picks wrong serial port | Multiple USB serial devices are connected. | Inspect ports and pass `idf.py -p PORT flash`. |

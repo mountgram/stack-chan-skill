@@ -18,10 +18,9 @@ const MAX_HISTORY_MESSAGES = 12;
 const LISTEN_TIMEOUT_MS = 15_000;
 const DOUBLE_TAP_MS = 450;
 const SPEECH_ACTIVITY_RMS = 600;
-
-function deviceReachableUrl(value: string) {
-  return new URL(value, config.publicBaseUrl).toString();
-}
+const PACKET_AUDIO_PLAYBACK_PCM = 0x41;
+const PACKET_AUDIO_PLAYBACK_END = 0x42;
+const WS_AUDIO_CHUNK_BYTES = 1024;
 
 // Persistent voice session state
 let sttSession: DeepgramLiveSession | undefined;
@@ -38,7 +37,6 @@ let deviceClient: WebSocket | undefined;
 let lastTapAt = 0;
 let conversationGeneration = 0;
 const conversationMessages: ModelMessage[] = [];
-const liveAudioStreams = new Map<string, ReadableStream<Uint8Array>>();
 let pendingCameraImage: { requestId: string; mediaType: string; width?: number; height?: number } | undefined;
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -363,15 +361,22 @@ async function processTurn(manual = false) {
     activeSpeechId = speech.id;
     activeSpeechFinished = false;
     earlySpeechDone = false;
-    console.log(`[turn ${speech.id}] tts start:`, speech.url);
-    liveAudioStreams.set(speech.id, speech.stream);
+    console.log(`[turn ${speech.id}] tts start`);
     handedToSpeech = true;
 
     speech.started.then(() => {
       if (activeSpeechId !== speech.id) return;
       device.screen("Speaking...", "speaking");
       console.log(`[turn ${speech.id}] device speak start`);
-      device.speak("", speech.url);
+      device.speak("", "websocket");
+      streamSpeechAudioToDevice(speech.id, speech.stream).catch((error) => {
+        if (activeSpeechId !== speech.id) return;
+        console.error(`[turn ${speech.id}] websocket audio stream failed:`, error instanceof Error ? error.message : String(error));
+        ttsSession?.cancelStream(error instanceof Error ? error : new Error(String(error)));
+        device.screen(error instanceof Error ? error.message : "Audio stream failed", "error");
+        isConversationActive = false;
+        isTurnInProgress = false;
+      });
     }).catch((error) => {
       if (activeSpeechId !== speech.id) return;
       console.error(`[turn ${speech.id}] speech start error:`, error instanceof Error ? error.message : String(error));
@@ -400,7 +405,6 @@ async function processTurn(manual = false) {
     withTimeout(speech.done, TURN_TIMEOUT_MS, "Agent/TTS stream").catch((error) => {
       if (activeSpeechId !== speech.id) return;
       console.error(`[turn ${speech.id}] stream timeout/error:`, error instanceof Error ? error.message : String(error));
-      liveAudioStreams.delete(speech.id);
       ttsSession?.cancelStream(error instanceof Error ? error : new Error(String(error)));
       device.screen(error instanceof Error ? error.message : "Stream failed", "error");
       isConversationActive = false;
@@ -449,6 +453,23 @@ function finishSpeechTurn() {
   scheduleListenTimeout();
 }
 
+async function streamSpeechAudioToDevice(id: string, stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  try {
+    while (activeSpeechId === id) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      for (let offset = 0; offset < value.byteLength; offset += WS_AUDIO_CHUNK_BYTES) {
+        registry.sendPacket(PACKET_AUDIO_PLAYBACK_PCM, value.subarray(offset, Math.min(offset + WS_AUDIO_CHUNK_BYTES, value.byteLength)));
+      }
+    }
+  } finally {
+    registry.sendPacket(PACKET_AUDIO_PLAYBACK_END);
+    reader.releaseLock();
+  }
+}
+
 export function createServer() {
   const server = Bun.serve<StackyWsData>({
     hostname: config.host,
@@ -467,16 +488,6 @@ export function createServer() {
         if (req.method === "GET" && url.pathname === "/render/simulator") return new Response(renderSimulatorPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
         if (req.method === "GET" && url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
         if (req.method === "GET" && url.pathname === "/health") return json({ ok: true, config: healthConfig(), device: registry.stateSnapshot() });
-        if (req.method === "GET" && url.pathname.startsWith("/audio/")) {
-          const id = decodeURIComponent(url.pathname.slice("/audio/".length));
-          const liveStream = liveAudioStreams.get(id);
-          if (liveStream) {
-            liveAudioStreams.delete(id);
-            console.log(`[turn ${id}] live audio fetch start`);
-            return new Response(liveStream, { headers: { "Content-Type": "audio/L16; rate=24000; channels=1", "Cache-Control": "no-store" } });
-          }
-          return new Response("not found", { status: 404 });
-        }
         if (req.method === "POST" && url.pathname === "/api/prompt") {
           const body = await req.json() as { prompt?: string };
           if (!body.prompt?.trim()) return json({ error: "prompt is required" }, 400);
@@ -512,7 +523,7 @@ export function createServer() {
           if (type === "led") return json(device.led(String(body.color ?? "#33cc99")));
           if (type === "home") return json(device.home());
           if (type === "stop") return json(device.stop());
-          if (type === "speak") return json(device.speak(String(body.text ?? ""), typeof body.audioUrl === "string" ? deviceReachableUrl(body.audioUrl) : undefined));
+          if (type === "speak") return json(device.speak(String(body.text ?? "")));
           if (type === "captureImage") return json(device.captureImage(undefined, Boolean(body.enhance), Boolean(body.preview)));
           if (type === "volume") return json(device.volume(Number(body.volume ?? registry.getVolume())));
           if (type === "startAudio") return json(await startConversation());

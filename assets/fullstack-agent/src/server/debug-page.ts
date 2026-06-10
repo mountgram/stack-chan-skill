@@ -102,7 +102,6 @@ export function debugPage() {
       const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const json = await res.json();
       log(json);
-      if (json.audioUrl) log({ type: 'audio-ready', url: json.audioUrl });
       return json;
     };
     const ws = new WebSocket(location.origin.replace(/^http/, 'ws') + '/stacky/debug');

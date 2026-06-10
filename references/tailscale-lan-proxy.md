@@ -37,4 +37,4 @@ You can also use the LAN machine's Tailscale `100.x.y.z` address.
 - Tailscale provides the private authenticated network path; the proxy does not add an application token or modify frames.
 - StackChan only sees a normal local WebSocket client from the LAN proxy.
 - Hetzner only needs Tailscale reachability to the proxy, not direct LAN reachability to StackChan.
-- Keep `STACKY_PUBLIC_BASE_URL` on the Hetzner brain set to a URL StackChan can fetch for audio. If StackChan cannot reach Hetzner directly, serve audio through a similar LAN/Tailscale HTTP path or keep the brain audio endpoint LAN-reachable.
+- TTS audio travels as binary WebSocket frames through the proxy, so StackChan does not need direct HTTP reachability to the remote brain for normal speech playback.

@@ -13,7 +13,7 @@ This reference is a reconstruction recipe. Do not assume the target repo already
 - End-of-turn transcript enters a Vercel AI SDK tool-loop agent.
 - Agent tools send safe physical commands to StackChan.
 - Agent text streams into Deepgram TTS.
-- The device fetches streamed 24 kHz linear16 PCM from `GET /audio/:id` and plays it.
+- The server streams 24 kHz linear16 PCM back to the device over the existing WebSocket.
 - `speechDone` returns the system to listening or standby.
 - A debug page or debug WebSocket can inspect state, commands, telemetry, transcripts, and camera frames.
 
@@ -54,7 +54,6 @@ Add other AI SDK providers only when needed, for example `@ai-sdk/anthropic`, `@
 STACKY_SERVER_HOST=0.0.0.0
 STACKY_SERVER_PORT=6001
 STACKY_DEVICE_WS_URL=ws://STACKCHAN_HOST:6001/stacky/device
-STACKY_PUBLIC_BASE_URL=http://LAN_HOST:6001
 
 AI_PROVIDER=openai
 AI_MODEL=gpt-5-mini
@@ -65,7 +64,7 @@ DEEPGRAM_STT_MODEL=nova-3
 DEEPGRAM_TTS_MODEL=aura-2-pandora-en
 ```
 
-`STACKY_DEVICE_WS_URL` points at the WebSocket server hosted by StackChan. The brain sends full URLs in device commands; `STACKY_PUBLIC_BASE_URL` is the base it uses when generating those URLs for local audio endpoints. Do not use `localhost` in URLs the device must fetch.
+`STACKY_DEVICE_WS_URL` points at the WebSocket server hosted by StackChan. TTS playback uses binary frames on that WebSocket, so the device does not need to fetch HTTP audio URLs.
 
 Minimal `config.ts`:
 
@@ -80,7 +79,6 @@ const numberFromEnv = (name: string, fallback: number) => {
 export const config = {
   host: Bun.env.STACKY_SERVER_HOST ?? "0.0.0.0",
   port: numberFromEnv("STACKY_SERVER_PORT", 6001),
-  publicBaseUrl: Bun.env.STACKY_PUBLIC_BASE_URL ?? `http://localhost:${numberFromEnv("STACKY_SERVER_PORT", 6001)}`,
   deviceWsUrl: Bun.env.STACKY_DEVICE_WS_URL,
   aiProvider: Bun.env.AI_PROVIDER ?? "openai",
   aiModel: Bun.env.AI_MODEL || undefined,
@@ -148,7 +146,7 @@ export type DeviceCommand =
   | { type: "face"; requestId: string; emotion: FaceEmotion }
   | { type: "look"; requestId: string; yaw?: number; pitch?: number; speed?: number }
   | { type: "led"; requestId: string; color: string; pattern?: "solid" | "pulse" | "off" }
-  | { type: "speak"; requestId: string; text: string; audioUrl?: string }
+  | { type: "speak"; requestId: string; text: string; audioTransport?: "websocket"; sampleRate?: 24000 }
   | { type: "startAudio"; requestId: string }
   | { type: "stopAudio"; requestId: string }
   | { type: "standby"; requestId: string; text?: string; wakeWord?: { enabled: boolean; phrase?: string; modelId?: string; modelUrl?: string } }
@@ -167,6 +165,7 @@ Command rules:
 - Store pending camera captures by `requestId`.
 - Treat all incoming JSON as untrusted.
 - Clamp servo and volume values before sending commands.
+- Send TTS playback with `speak({ audioTransport: "websocket" })`, then binary packet `0x41` chunks and a final `0x42` packet.
 
 ## Device Registry
 
@@ -179,6 +178,7 @@ Registry responsibilities:
 - Store `connected`, `connectedAt`, `lastSeenAt`, `capabilities`, `volume`, and latest telemetry.
 - Broadcast device messages, commands, camera images, connection changes, and errors to debug clients.
 - Provide `send(command)` that serializes the command to the active device or throws if disconnected.
+- Provide `sendPacket(type, payload)` that writes the 5-byte packet header plus binary payload to the active device.
 - Provide `waitForImage(requestId, timeoutMs)` for camera tools.
 
 Camera binary handling:
@@ -222,8 +222,14 @@ export function look(yaw?: number, pitch?: number, speed?: number) {
   });
 }
 
-export function speak(text: string, audioUrl?: string) {
-  return registry.send({ type: "speak", requestId: commandId(), text: text.slice(0, 500), audioUrl });
+export function speak(text: string, audioTransport?: "websocket") {
+  return registry.send({
+    type: "speak",
+    requestId: commandId(),
+    text: text.slice(0, 500),
+    audioTransport,
+    sampleRate: audioTransport ? 24000 : undefined,
+  });
 }
 ```
 
@@ -295,27 +301,49 @@ connection.connect();
 await connection.waitForOpen();
 ```
 
-Implement two paths:
+Implement the streaming path for conversation:
 
-- `speak(text)` buffers all returned audio, writes `.stacky-audio/tts-*.pcm`, and returns `/audio/:id`.
-- `speakStream(textChunks)` returns `{ id, url, stream, started, text, done }` immediately and enqueues Deepgram audio chunks into a `ReadableStream<Uint8Array>`.
+- `speakStream(textChunks)` returns `{ id, stream, started, text, done }` immediately and enqueues Deepgram audio chunks into a `ReadableStream<Uint8Array>`.
+- The server sends those chunks to the device as WebSocket binary playback packets.
 
 The streaming path is preferred for conversation:
 
 ```ts
+const PACKET_AUDIO_PLAYBACK_PCM = 0x41;
+const PACKET_AUDIO_PLAYBACK_END = 0x42;
+const WS_AUDIO_CHUNK_BYTES = 1024;
+
 const speech = ttsSession.speakStream(streamAgentText(messages));
-liveAudioStreams.set(speech.id, speech.stream);
 
 speech.started.then(() => {
   device.screen("Speaking...", "speaking");
-  device.speak("", speech.url);
+  device.speak("", "websocket");
+  streamSpeechAudioToDevice(speech.id, speech.stream).catch(handleTurnError);
 });
+
+async function streamSpeechAudioToDevice(id: string, stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  try {
+    while (activeSpeechId === id) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      for (let offset = 0; offset < value.byteLength; offset += WS_AUDIO_CHUNK_BYTES) {
+        registry.sendPacket(PACKET_AUDIO_PLAYBACK_PCM, value.subarray(offset, Math.min(offset + WS_AUDIO_CHUNK_BYTES, value.byteLength)));
+      }
+    }
+  } finally {
+    registry.sendPacket(PACKET_AUDIO_PLAYBACK_END);
+    reader.releaseLock();
+  }
+}
 ```
 
 Important streaming details:
 
-- Enqueue a short initial silence buffer so `GET /audio/:id` can start before the first TTS audio arrives.
+- Enqueue a short initial silence buffer so device playback can start before the first TTS audio arrives.
 - Keep a small silence keepalive until first audio, then clear it.
+- Chunk playback packets to fit firmware queue frame size, currently `1024` bytes.
 - Send each agent text chunk with `connection.sendText({ type: "Speak", text: chunk })`.
 - After the agent stream ends, call `connection.sendFlush({ type: "Flush" })`.
 - Resolve `done` only after Deepgram sends `Flushed` and the audio stream closes.
@@ -418,7 +446,6 @@ let activeSpeechId: string | undefined;
 let activeSpeechFinished = false;
 let earlySpeechDone = false;
 const conversationMessages: ModelMessage[] = [];
-const liveAudioStreams = new Map<string, ReadableStream<Uint8Array>>();
 ```
 
 Conversation start:
@@ -446,8 +473,8 @@ Processing a turn:
 5. Build messages from recent conversation plus the latest transcript.
 6. Ensure TTS is connected.
 7. Start `ttsSession.speakStream(streamAgentText(messages))`.
-8. Store the stream in `liveAudioStreams` by speech id.
-9. When speech starts, send `speak("", speech.url)` to the device.
+8. When speech starts, send `speak("", "websocket")` to the device.
+9. Stream TTS PCM to the device as binary packet `0x41` chunks and finish with `0x42`.
 10. When agent text completes, append user and assistant turns to short history.
 11. When TTS flush completes, mark `activeSpeechFinished = true`.
 12. If the device already sent `speechDone`, finish the turn then.
@@ -485,25 +512,12 @@ Required routes:
 |---|---|
 | `GET /` | Browser debug UI. |
 | `GET /health` | Config and device state without secrets. |
-| `GET /audio/:id` | Serves live TTS streams or saved PCM files. |
 | `POST /api/prompt` | Text prompt into agent for testing. |
 | `POST /api/audio-prompt` | Multipart audio upload through one-shot STT and agent. |
 | `POST /api/voice/start` | Start tap-to-talk conversation from browser. |
 | `POST /api/voice/stop` | Stop conversation and enter standby. |
 | `POST /api/command` | Manual device command for debugging. |
 | `WS /stacky/debug` | Browser debug event stream. |
-
-`GET /audio/:id` should first check `liveAudioStreams`, then `.stacky-audio` files:
-
-```ts
-if (liveAudioStreams.has(id)) {
-  const stream = liveAudioStreams.get(id)!;
-  liveAudioStreams.delete(id);
-  return new Response(stream, {
-    headers: { "Content-Type": "audio/L16; rate=24000; channels=1", "Cache-Control": "no-store" },
-  });
-}
-```
 
 Device WebSocket client:
 
@@ -572,5 +586,5 @@ Do not expose secrets in debug HTML or `/health`.
 - Tap starts live STT and sends `startAudio`.
 - Device audio packets reach Deepgram and produce transcript events.
 - End of turn calls the agent and at least one physical tool can execute.
-- Deepgram TTS stream is available from `/audio/:id` as `audio/L16; rate=24000; channels=1`.
+- Deepgram TTS stream is sent to StackChan as `0x41` WebSocket binary PCM chunks plus a final `0x42` marker.
 - Device sends `speechDone`, then server returns to listening or standby correctly.

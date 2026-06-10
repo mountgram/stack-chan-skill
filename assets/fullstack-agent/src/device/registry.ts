@@ -142,6 +142,18 @@ class Registry {
     return command;
   }
 
+  sendPacket(type: number, payload: Uint8Array<ArrayBufferLike> = new Uint8Array()) {
+    if (!this.device) throw new Error("StackChan is not connected");
+    const packet = new Uint8Array(5 + payload.byteLength);
+    packet[0] = type;
+    packet[1] = (payload.byteLength >> 24) & 0xff;
+    packet[2] = (payload.byteLength >> 16) & 0xff;
+    packet[3] = (payload.byteLength >> 8) & 0xff;
+    packet[4] = payload.byteLength & 0xff;
+    packet.set(payload, 5);
+    this.device.send(packet);
+  }
+
   hasDevice() {
     return Boolean(this.device);
   }

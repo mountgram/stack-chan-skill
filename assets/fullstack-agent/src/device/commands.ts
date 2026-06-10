@@ -24,8 +24,8 @@ export function led(color: string) {
   return registry.send({ type: "led", requestId: commandId(), color });
 }
 
-export function speak(text: string, audioUrl?: string) {
-  return registry.send({ type: "speak", requestId: commandId(), text: text.slice(0, 500), audioUrl });
+export function speak(text: string, audioTransport?: "websocket") {
+  return registry.send({ type: "speak", requestId: commandId(), text: text.slice(0, 500), audioTransport, sampleRate: audioTransport ? 24000 : undefined });
 }
 
 export function startAudio() {

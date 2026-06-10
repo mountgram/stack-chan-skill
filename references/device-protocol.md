@@ -7,8 +7,8 @@ Read this when implementing firmware or server messages.
 - Device hosts WebSocket: `ws://STACKCHAN_HOST:6001/stacky/device`.
 - The brain server connects out to the device-hosted WebSocket.
 - JSON text frames carry commands and events.
-- Binary frames carry PCM audio or raw camera image payloads.
-- Any URL field sent to firmware, such as `speak.audioUrl` or `standby.wakeWord.modelUrl`, must be a full device-reachable URL. Firmware fetches it as-is and does not resolve relative paths against the WebSocket URL.
+- Binary frames carry microphone PCM, TTS playback PCM, playback end markers, or raw camera image payloads.
+- Any URL field sent to firmware, such as `standby.wakeWord.modelUrl`, must be a full device-reachable URL. Firmware fetches it as-is and does not resolve relative paths against the WebSocket URL.
 
 ## Device To Server JSON
 
@@ -31,7 +31,7 @@ Read this when implementing firmware or server messages.
 { "type": "face", "requestId": "cmd-2", "emotion": "happy" }
 { "type": "look", "requestId": "cmd-3", "yaw": 10, "pitch": 35, "speed": 0.5 }
 { "type": "led", "requestId": "cmd-4", "color": "#33cc99", "pattern": "pulse" }
-{ "type": "speak", "requestId": "cmd-5", "text": "Hello", "audioUrl": "http://LAN_HOST:6001/audio/id" }
+{ "type": "speak", "requestId": "cmd-5", "text": "", "audioTransport": "websocket", "sampleRate": 24000 }
 { "type": "startAudio", "requestId": "cmd-6" }
 { "type": "stopAudio", "requestId": "cmd-7" }
 { "type": "standby", "requestId": "cmd-8", "text": "Standby. Say \"Stacky\".", "wakeWord": { "enabled": true, "phrase": "Stacky", "modelId": "stacky" } }
@@ -53,6 +53,7 @@ Read this when implementing firmware or server messages.
 - `standby` means stop full-audio streaming and enter the server-selected idle mode.
 - Firmware must advertise `wakeWord` only when it can run a local detector. If `wakeWord` is absent, the server should use tap-only standby.
 - A local detector sends `wakeWord` when it fires; the server then starts a normal STT conversation with `startAudio`.
+- For normal TTS playback, send `speak` with `audioTransport: "websocket"`, then send PCM chunks as binary packet `0x41`, and finally send `0x42` to end playback.
 
 ## Enums And Limits
 
@@ -78,6 +79,8 @@ bytes 5..: payload
 | Type | Direction | Payload |
 |---|---|---|
 | `0x31` | device to server | 16-bit little-endian mono PCM audio chunk. |
+| `0x41` | server to device | 24 kHz 16-bit little-endian mono PCM playback chunk. |
+| `0x42` | server to device | End of WebSocket playback stream. Payload length should be `0`. |
 | raw binary after `cameraImage` event | device to server | Image bytes described by the immediately preceding `cameraImage` JSON event. |
 | `0x32` | device to server | Legacy camera packet: JSON metadata of length `N`, followed by image bytes. |
 

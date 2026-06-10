@@ -14,9 +14,6 @@ const booleanFromEnv = (name: string, fallback: boolean) => {
 export const config = {
   host: Bun.env.STACKY_SERVER_HOST ?? "0.0.0.0",
   port: numberFromEnv("STACKY_SERVER_PORT", 6001),
-  publicBaseUrl:
-    Bun.env.STACKY_PUBLIC_BASE_URL ??
-    `http://localhost:${numberFromEnv("STACKY_SERVER_PORT", 6001)}`,
   deviceWsUrl: Bun.env.STACKY_DEVICE_WS_URL,
   openrouterApiKey: Bun.env.OPENROUTER_API_KEY,
   deepgramApiKey: Bun.env.DEEPGRAM_API_KEY,
@@ -34,7 +31,6 @@ export function healthConfig() {
   return {
     host: config.host,
     port: config.port,
-    publicBaseUrl: config.publicBaseUrl,
     hasDeviceWsUrl: Boolean(config.deviceWsUrl),
     hasOpenrouterApiKey: Boolean(config.openrouterApiKey),
     hasDeepgramApiKey: Boolean(config.deepgramApiKey),

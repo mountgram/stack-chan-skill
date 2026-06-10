@@ -8,7 +8,7 @@ Read this when you need to decide what belongs in the firmware, the starter skil
 StackChan hardware
   display / touch / servos / LEDs / mic / speaker / camera
         |
-        | Wi-Fi WebSocket + HTTP audio/image endpoints
+        | device-hosted Wi-Fi WebSocket
         v
 Local brain server
   device bridge + voice pipeline + agent tools + debug UI
@@ -35,7 +35,7 @@ AI and voice providers
 ## Firmware Responsibilities
 
 - Connect or reuse Wi-Fi through upstream StackChan facilities.
-- Open `/stacky/device` WebSocket with auth token in URL or header.
+- Host `/stacky/device` WebSocket and show the local URL while waiting for a brain.
 - Send `hello`, telemetry, touch events, acknowledgements, errors, audio frames, and camera frames.
 - Receive commands for screen, face, look, LEDs, speech playback, mic streaming, camera capture, stop, home, and ping.
 - Clamp and rate-limit motion locally.
@@ -44,11 +44,10 @@ AI and voice providers
 
 ## Brain Server Responsibilities
 
-- Authenticate the device WebSocket.
 - Maintain connected device state and last telemetry.
 - Expose typed command helpers for face, look, LEDs, screen, speak, stop, home, mic, and camera.
 - Convert user input into agent calls and tool calls.
-- Run STT/TTS providers and serve generated audio at a LAN-reachable URL.
+- Run STT/TTS providers and stream generated audio over the device WebSocket.
 - Keep personality, memory, debug UI, and provider choices out of reusable firmware.
 
 ## Minimal Blank Repo Layout

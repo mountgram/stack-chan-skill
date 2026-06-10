@@ -54,7 +54,7 @@ Use this skill to start, operate, maintain, flash, and troubleshoot a complete S
 
 ## Run Path
 
-1. Ensure the brain server has `STACKY_DEVICE_WS_URL` and `STACKY_PUBLIC_BASE_URL` configured.
+1. Ensure the brain server has `STACKY_DEVICE_WS_URL` configured.
 2. Start the Bun server from the target app repo, usually with `bun run dev` or `bun run start`.
 3. Open `/health` and verify the server is reachable on the LAN address used by firmware.
 4. Flash or run firmware; it hosts `ws://<stackchan>:6001/stacky/device`.

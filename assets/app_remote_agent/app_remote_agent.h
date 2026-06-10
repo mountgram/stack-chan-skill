@@ -40,6 +40,7 @@ public:
     struct AudioPlaybackRequest {
         char requestId[64] = {0};
         char url[256]      = {0};
+        bool websocket     = false;
     };
 
     struct AudioPcmFrame {
@@ -98,6 +99,7 @@ private:
     std::mutex _send_mutex;
     std::queue<ReceivedMessage> _messages;
     QueueHandle_t _audio_playback_queue = nullptr;
+    QueueHandle_t _audio_playback_pcm_queue = nullptr;
     QueueHandle_t _audio_frame_queue    = nullptr;
     TaskHandle_t _audio_playback_task   = nullptr;
     TaskHandle_t _audio_capture_task    = nullptr;
@@ -186,9 +188,12 @@ private:
     bool captureAndSendAudioFrame();
     bool captureAndSendCameraImage(const char* requestId, bool enhance, bool preview);
     bool queueAudioPlayback(const char* requestId, const char* url);
+    bool queueWebSocketAudioPlayback(const char* requestId);
+    void queueWebSocketAudioFrame(const uint8_t* data, size_t len);
     void audioPlaybackLoop();
     void audioCaptureLoop();
     void playAudioUrl(const char* url);
+    void playWebSocketAudio();
     static esp_err_t webSocketHandler(httpd_req_t* req);
     static void webSocketCloseHandler(httpd_handle_t server, int fd);
     static void audioPlaybackTaskEntry(void* arg);

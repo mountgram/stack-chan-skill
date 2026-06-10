@@ -48,11 +48,10 @@ src/
 STACKY_SERVER_HOST=0.0.0.0
 STACKY_SERVER_PORT=6001
 STACKY_DEVICE_WS_URL=ws://STACKCHAN_HOST:6001/stacky/device
-STACKY_PUBLIC_BASE_URL=http://LAN_HOST:6001
 DEEPGRAM_API_KEY=
 ```
 
-`STACKY_DEVICE_WS_URL` points at the WebSocket server hosted by StackChan. The brain sends full URLs in device commands; `STACKY_PUBLIC_BASE_URL` is the base it uses when generating those URLs for local audio endpoints. Do not use `localhost` for URLs the device must fetch.
+`STACKY_DEVICE_WS_URL` points at the WebSocket server hosted by StackChan. TTS playback uses binary frames on that WebSocket, so StackChan does not need to fetch HTTP audio URLs.
 
 ## Required Routes
 
@@ -60,7 +59,6 @@ DEEPGRAM_API_KEY=
 |---|---|
 | `GET /` | Browser debug UI. |
 | `GET /health` | Server and device status without secrets. |
-| `GET /audio/:id` | Serve generated PCM audio to firmware. |
 | `POST /api/prompt` | Text prompt into the agent. |
 | `POST /api/command` | Manual StackChan command for debugging. |
 | outbound `STACKY_DEVICE_WS_URL` | Device-hosted firmware WebSocket. |

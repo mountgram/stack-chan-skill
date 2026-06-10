@@ -34,7 +34,7 @@ type BrainToDeviceCommand =
   | { type: "face"; requestId: string; emotion: FaceEmotion }
   | { type: "look"; requestId: string; yaw?: number; pitch?: number; speed?: number }
   | { type: "led"; requestId: string; color: string; pattern?: LedPattern }
-  | { type: "speak"; requestId: string; text: string; audioUrl?: string }
+  | { type: "speak"; requestId: string; text: string; audioTransport?: "websocket"; sampleRate?: 24000 }
   | { type: "startAudio"; requestId: string }
   | { type: "stopAudio"; requestId: string }
   | { type: "standby"; requestId: string; text?: string; wakeWord?: { enabled: boolean; phrase?: string; modelId?: string; modelUrl?: string } }
@@ -48,6 +48,8 @@ type BrainToDeviceCommand =
 
 const PACKET_AUDIO_PCM = 0x31;
 const PACKET_CAMERA_JPEG = 0x32;
+const PACKET_AUDIO_PLAYBACK_PCM = 0x41;
+const PACKET_AUDIO_PLAYBACK_END = 0x42;
 const wsUrl = process.env.STACKY_DEVICE_WS_URL ?? "ws://127.0.0.1:6001/stacky/device";
 
 let pendingCameraImage: { requestId: string; mediaType: string; width?: number; height?: number } | undefined;
