@@ -12,6 +12,7 @@
 #include <board.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
+#include <esp_netif.h>
 #include <hal/board/config.h>
 #include <hal/board/hal_bridge.h>
 #include <hal/hal.h>
@@ -22,7 +23,6 @@
 #include <stackchan/stackchan.h>
 #include <stackchan/avatar/decorators/decorators.h>
 #include <stackchan/avatar/skins/default/default.h>
-#include <web_socket.h>
 
 #include <algorithm>
 #include <array>
@@ -30,15 +30,31 @@
 #include <cstdlib>
 #include <cstring>
 #include <utility>
+#include <unistd.h>
 
-#ifndef STACKY_WS_URL
-#define STACKY_WS_URL "ws://STACKY_BRAIN_HOST:6001/stacky/device?token=dev-token-change-me"
+#ifndef STACKY_WS_PORT
+#define STACKY_WS_PORT 6001
 #endif
 
 using namespace smooth_ui_toolkit::lvgl_cpp;
 using namespace stackchan;
 
 static const char* TAG = "REMOTE.AGENT";
+static const char* STACKY_WS_PATH = "/stacky/device";
+static AppRemoteAgent* s_websocket_app = nullptr;
+
+static std::string websocket_listen_url()
+{
+    char buffer[96];
+    auto* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info = {};
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+        snprintf(buffer, sizeof(buffer), "ws://" IPSTR ":%d%s", IP2STR(&ip_info.ip), STACKY_WS_PORT, STACKY_WS_PATH);
+        return buffer;
+    }
+    snprintf(buffer, sizeof(buffer), "ws://<stackchan>:%d%s", STACKY_WS_PORT, STACKY_WS_PATH);
+    return buffer;
+}
 static constexpr size_t MAX_RENDER_ANIMATIONS = 4;
 static constexpr size_t MAX_RENDER_TRACKS = 32;
 static constexpr uint32_t AUDIO_START_TIMEOUT_MS = 2000;
@@ -269,7 +285,7 @@ void AppRemoteAgent::onOpen()
     });
     applyPendingStatus();
     startAudioTasks();
-    connectWebSocket();
+    startWebSocketServer();
 }
 
 void AppRemoteAgent::createUi()
@@ -298,7 +314,7 @@ void AppRemoteAgent::createUi()
     lv_obj_set_width(_main_label, 300);
     lv_obj_set_style_text_color(_main_label, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(_main_label, &lv_font_montserrat_24, 0);
-    lv_label_set_text(_main_label, "Connecting to brain...");
+    lv_label_set_text(_main_label, "Waiting for brain...");
     lv_obj_align(_main_label, LV_ALIGN_CENTER, 0, -10);
     lv_obj_add_flag(_main_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_main_label, panel_click_cb, LV_EVENT_CLICKED, this);
@@ -307,58 +323,159 @@ void AppRemoteAgent::createUi()
     lv_label_set_long_mode(_log_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(_log_label, 300);
     lv_obj_set_style_text_color(_log_label, lv_color_hex(0xA7B0C0), 0);
-    lv_label_set_text(_log_label, STACKY_WS_URL);
+    lv_label_set_text(_log_label, websocket_listen_url().c_str());
     lv_obj_align(_log_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_add_flag(_log_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_log_label, panel_click_cb, LV_EVENT_CLICKED, this);
 }
 
-void AppRemoteAgent::connectWebSocket()
+void AppRemoteAgent::startWebSocketServer()
 {
-    _websocket.reset();
-    _connected = false;
-    setStatus("connecting", "Connecting to brain...");
+    if (_websocket_server) return;
 
-    auto network = Board::GetInstance().GetNetwork();
-    _websocket   = network->CreateWebSocket(1);
-    if (!_websocket) {
-        setStatus("error", "WebSocket create failed");
+    setStatus("connecting", "Starting WebSocket server...");
+    s_websocket_app = this;
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = STACKY_WS_PORT;
+    config.max_open_sockets = 2;
+    config.lru_purge_enable = true;
+    config.close_fn = AppRemoteAgent::webSocketCloseHandler;
+
+    esp_err_t err = httpd_start(&_websocket_server, &config);
+    if (err != ESP_OK) {
+        _websocket_server = nullptr;
+        setStatus("error", "WebSocket server failed");
+        mclog::tagInfo(TAG, "httpd_start failed: {}", (int)err);
         return;
     }
 
-    _websocket->OnConnected([this]() {
-        _connected = true;
-        setStatus("connected", "Ready");
-        sendHello();
-    });
+    httpd_uri_t ws_uri = {};
+    ws_uri.uri = STACKY_WS_PATH;
+    ws_uri.method = HTTP_GET;
+    ws_uri.handler = AppRemoteAgent::webSocketHandler;
+    ws_uri.user_ctx = this;
+    ws_uri.is_websocket = true;
 
-    _websocket->OnDisconnected([this]() {
-        _connected = false;
-        _audio_streaming = false;
-        _audio_playback_cancel = true;
-        failPendingAudioStart("connection closed before audio capture started");
-        if (_audio_frame_queue) {
-            xQueueReset(_audio_frame_queue);
-        }
-        if (_audio_playback_queue) {
-            xQueueReset(_audio_playback_queue);
-        }
-        _mic_audio_level = 0;
-        _playback_audio_level = 0;
-        disarmWakeWord(500);
-        queueStatus("offline", "Disconnected");
-    });
-
-    _websocket->OnData([this](const char* data, size_t len, bool binary) {
-        if (binary) return;
-        std::lock_guard<std::mutex> lock(_mutex);
-        _messages.push({binary, std::string(data, len)});
-    });
-
-    if (!_websocket->Connect(STACKY_WS_URL)) {
-        setStatus("error", "Connect failed");
+    err = httpd_register_uri_handler(_websocket_server, &ws_uri);
+    if (err != ESP_OK) {
+        mclog::tagInfo(TAG, "httpd_register_uri_handler failed: {}", (int)err);
+        httpd_stop(_websocket_server);
+        _websocket_server = nullptr;
+        if (s_websocket_app == this) s_websocket_app = nullptr;
+        setStatus("error", "WebSocket route failed");
+        return;
     }
-    _last_reconnect_attempt = GetHAL().millis();
+
+    setStatus("offline", websocket_listen_url().c_str());
+}
+
+void AppRemoteAgent::stopWebSocketServer()
+{
+    httpd_handle_t server = _websocket_server;
+    _websocket_server = nullptr;
+    _websocket_fd = -1;
+    _connected = false;
+    _hello_pending = false;
+    if (s_websocket_app == this) s_websocket_app = nullptr;
+    if (server) {
+        httpd_stop(server);
+    }
+}
+
+void AppRemoteAgent::handleWebSocketConnected(int fd)
+{
+    if (_websocket_fd >= 0 && _websocket_fd != fd && _websocket_server) {
+        httpd_sess_trigger_close(_websocket_server, _websocket_fd);
+    }
+    _websocket_fd = fd;
+    _audio_streaming = false;
+    _audio_playback_cancel = true;
+    failPendingAudioStart("new brain connection opened");
+    if (_audio_frame_queue) {
+        xQueueReset(_audio_frame_queue);
+    }
+    if (_audio_playback_queue) {
+        xQueueReset(_audio_playback_queue);
+    }
+    _mic_audio_level = 0;
+    _playback_audio_level = 0;
+    _connected = true;
+    _hello_pending = true;
+    queueStatus("connected", "Ready");
+}
+
+void AppRemoteAgent::handleWebSocketDisconnected(int fd)
+{
+    if (_websocket_fd != fd) return;
+    _websocket_fd = -1;
+    _connected = false;
+    _hello_pending = false;
+    _audio_streaming = false;
+    _audio_playback_cancel = true;
+    failPendingAudioStart("connection closed before audio capture started");
+    if (_audio_frame_queue) {
+        xQueueReset(_audio_frame_queue);
+    }
+    if (_audio_playback_queue) {
+        xQueueReset(_audio_playback_queue);
+    }
+    _mic_audio_level = 0;
+    _playback_audio_level = 0;
+    disarmWakeWord(500);
+    queueStatus("offline", websocket_listen_url().c_str());
+}
+
+esp_err_t AppRemoteAgent::handleWebSocketFrame(httpd_req_t* req)
+{
+    httpd_ws_frame_t frame = {};
+    esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
+    const int fd = httpd_req_to_sockfd(req);
+    if (err != ESP_OK) {
+        handleWebSocketDisconnected(fd);
+        return err;
+    }
+
+    if (frame.type == HTTPD_WS_TYPE_CLOSE) {
+        handleWebSocketDisconnected(fd);
+        return ESP_OK;
+    }
+    if (frame.type == HTTPD_WS_TYPE_PING || frame.type == HTTPD_WS_TYPE_PONG) {
+        return ESP_OK;
+    }
+
+    std::vector<uint8_t> payload(frame.len + 1);
+    frame.payload = payload.data();
+    err = httpd_ws_recv_frame(req, &frame, frame.len);
+    if (err != ESP_OK) {
+        handleWebSocketDisconnected(fd);
+        return err;
+    }
+
+    if (frame.type == HTTPD_WS_TYPE_TEXT) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _messages.push({false, std::string(reinterpret_cast<char*>(payload.data()), frame.len)});
+    }
+    return ESP_OK;
+}
+
+esp_err_t AppRemoteAgent::webSocketHandler(httpd_req_t* req)
+{
+    auto* app = static_cast<AppRemoteAgent*>(req->user_ctx);
+    if (!app) return ESP_ERR_INVALID_ARG;
+    if (req->method == HTTP_GET) {
+        app->handleWebSocketConnected(httpd_req_to_sockfd(req));
+        return ESP_OK;
+    }
+    return app->handleWebSocketFrame(req);
+}
+
+void AppRemoteAgent::webSocketCloseHandler(httpd_handle_t server, int fd)
+{
+    if (s_websocket_app && s_websocket_app->_websocket_server == server) {
+        s_websocket_app->handleWebSocketDisconnected(fd);
+    }
+    ::close(fd);
 }
 
 void AppRemoteAgent::onRunning()
@@ -367,17 +484,18 @@ void AppRemoteAgent::onRunning()
 
     applyPendingStatus();
 
-    if (!_websocket || !_websocket->IsConnected()) {
-        if (GetHAL().millis() - _last_reconnect_attempt > 5000) {
-            connectWebSocket();
+    if (_connected) {
+        if (_hello_pending.exchange(false)) {
+            sendHello();
         }
-    } else {
         processMessages();
         sendQueuedAudioFrames();
         updateRenderAnimation();
         if (GetHAL().millis() - _last_telemetry_at > 3000) {
             sendTelemetry();
         }
+    } else if (!_websocket_server) {
+        startWebSocketServer();
     }
 
     {
@@ -679,14 +797,16 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             const char* model_id                   = wake_word["modelId"] | "";
             const char* phrase                     = wake_word["phrase"] | "Stacky";
             if (strcmp(model_id, "stacky") != 0 || strcmp(phrase, "Stacky") != 0) {
-                sendError(requestId, "wake word model unavailable");
-                return;
+                mclog::tagInfo(TAG, "wake word model unavailable; falling back to tap standby");
+                disarmWakeWord(500);
+                text = "Standby. Tap to talk.";
+            } else if (!ensureWakeWordDetector() || !_wake_word_detector->arm()) {
+                mclog::tagInfo(TAG, "wake word detector unavailable; falling back to tap standby");
+                disarmWakeWord(500);
+                text = "Standby. Tap to talk.";
+            } else {
+                logHeap("after wake-word arm");
             }
-            if (!ensureWakeWordDetector() || !_wake_word_detector->arm()) {
-                sendError(requestId, "wake word detector unavailable");
-                return;
-            }
-            logHeap("after wake-word arm");
         } else {
             disarmWakeWord(500);
         }
@@ -881,18 +1001,41 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 void AppRemoteAgent::sendJson(const std::string& data)
 {
     std::lock_guard<std::mutex> lock(_send_mutex);
-    if (_websocket && _websocket->IsConnected()) {
-        _websocket->Send(data.c_str());
+    sendWebSocketFrame(reinterpret_cast<const uint8_t*>(data.data()), data.size(), false);
+}
+
+bool AppRemoteAgent::sendWebSocketFrame(const uint8_t* data, size_t len, bool binary)
+{
+    if (!_websocket_server || _websocket_fd < 0 || !_connected) {
+        return false;
     }
+
+    httpd_ws_frame_t frame = {};
+    frame.type = binary ? HTTPD_WS_TYPE_BINARY : HTTPD_WS_TYPE_TEXT;
+    frame.payload = const_cast<uint8_t*>(data);
+    frame.len = len;
+
+    esp_err_t err = httpd_ws_send_data(_websocket_server, _websocket_fd, &frame);
+    if (err != ESP_OK) {
+        mclog::tagInfo(TAG, "websocket send failed: {}", (int)err);
+        _websocket_fd = -1;
+        _connected = false;
+        _hello_pending = false;
+        _audio_streaming = false;
+        _audio_playback_cancel = true;
+        queueStatus("offline", websocket_listen_url().c_str());
+        return false;
+    }
+    return true;
 }
 
 void AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
 {
-    if (!_websocket || !_websocket->IsConnected()) {
+    if (!_connected) {
         return;
     }
     std::lock_guard<std::mutex> lock(_send_mutex);
-    if (!_websocket || !_websocket->IsConnected()) {
+    if (!_connected) {
         return;
     }
     std::vector<uint8_t> packet;
@@ -903,7 +1046,7 @@ void AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
     packet.push_back((len >> 8) & 0xff);
     packet.push_back(len & 0xff);
     packet.insert(packet.end(), data, data + len);
-    _websocket->Send(packet.data(), packet.size(), true);
+    sendWebSocketFrame(packet.data(), packet.size(), true);
 }
 
 void AppRemoteAgent::sendHello()
@@ -1323,7 +1466,8 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
         lv_obj_clear_flag(_status_dot, LV_OBJ_FLAG_HIDDEN);
     }
     if (_main_label) {
-        const bool show_main = !_render_active && mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "standby") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "offline") == 0 || strcmp(mode, "connecting") == 0);
+        const bool waiting_for_brain = mode && strcmp(mode, "offline") == 0 && !_connected;
+        const bool show_main = !_render_active && !waiting_for_brain && mode && (strcmp(mode, "connected") == 0 || strcmp(mode, "standby") == 0 || strcmp(mode, "error") == 0 || strcmp(mode, "connecting") == 0);
         lv_label_set_text(_main_label, show_main && text ? text : "");
     }
     if (_log_label) {
@@ -1332,7 +1476,7 @@ void AppRemoteAgent::setStatus(const char* mode, const char* text)
         } else if (_render_active) {
             lv_label_set_text(_log_label, "");
         } else {
-            lv_label_set_text(_log_label, _connected ? "" : STACKY_WS_URL);
+            lv_label_set_text(_log_label, _connected ? "" : (text ? text : "Waiting for brain"));
         }
     }
     moveStatusChromeForeground();
@@ -1406,7 +1550,7 @@ void AppRemoteAgent::handleWakeWordDetected(const std::string& wake_word)
 
 bool AppRemoteAgent::captureAndSendAudioFrame()
 {
-    if (!_websocket || !_websocket->IsConnected()) {
+    if (!_connected) {
         return false;
     }
 
@@ -1712,10 +1856,8 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
         }
 
         std::lock_guard<std::mutex> lock(_send_mutex);
-        if (_websocket && _websocket->IsConnected()) {
-            _websocket->Send(event, event_len, false);
-            _websocket->Send(_camera_preview_bmp.data(), _camera_preview_bmp.size(), true);
-        }
+        sendWebSocketFrame(reinterpret_cast<const uint8_t*>(event), event_len, false);
+        sendWebSocketFrame(_camera_preview_bmp.data(), _camera_preview_bmp.size(), true);
         _camera_capture_active = false;
         logHeap("after captureImage preview");
         return true;
@@ -1753,10 +1895,8 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
     }
 
     std::lock_guard<std::mutex> lock(_send_mutex);
-    if (_websocket && _websocket->IsConnected()) {
-        _websocket->Send(event, event_len, false);
-        _websocket->Send(jpeg_data, jpeg_len, true);
-    }
+    sendWebSocketFrame(reinterpret_cast<const uint8_t*>(event), event_len, false);
+    sendWebSocketFrame(jpeg_data, jpeg_len, true);
     free(jpeg_data);
     _camera_capture_active = false;
     logHeap("after captureImage");
@@ -1870,7 +2010,7 @@ void AppRemoteAgent::onClose()
     }
     stopAudioTasks();
     _audio_streaming = false;
-    _websocket.reset();
+    stopWebSocketServer();
     clearRenderScene();
     LvglLockGuard lock;
     view::destroy_home_indicator();

@@ -12,11 +12,11 @@
 #include <vector>
 
 #include <ArduinoJson.hpp>
+#include <esp_http_server.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-class WebSocket;
 class StackyWakeWordDetector;
 typedef struct _lv_obj_t lv_obj_t;
 
@@ -91,7 +91,8 @@ public:
 
 private:
 
-    std::unique_ptr<WebSocket> _websocket;
+    httpd_handle_t _websocket_server = nullptr;
+    int _websocket_fd = -1;
     std::unique_ptr<StackyWakeWordDetector> _wake_word_detector;
     std::mutex _mutex;
     std::mutex _send_mutex;
@@ -105,11 +106,11 @@ private:
     lv_obj_t* _main_label   = nullptr;
     lv_obj_t* _log_label    = nullptr;
     lv_obj_t* _render_root  = nullptr;
-    uint32_t _last_reconnect_attempt = 0;
     uint32_t _last_telemetry_at      = 0;
     uint32_t _last_motion_at         = 0;
     std::atomic_bool _opened{false};
     std::atomic_bool _connected{false};
+    std::atomic_bool _hello_pending{false};
     std::atomic_bool _audio_streaming{false};
     std::atomic_bool _audio_start_pending{false};
     std::atomic_bool _audio_first_input_attempt_logged{false};
@@ -144,7 +145,12 @@ private:
     char _audio_stream_request_id[64] = {0};
 
     void createUi();
-    void connectWebSocket();
+    void startWebSocketServer();
+    void stopWebSocketServer();
+    void handleWebSocketConnected(int fd);
+    void handleWebSocketDisconnected(int fd);
+    esp_err_t handleWebSocketFrame(httpd_req_t* req);
+    bool sendWebSocketFrame(const uint8_t* data, size_t len, bool binary);
     void startAudioTasks();
     void stopAudioTasks();
     void processMessages();
@@ -183,6 +189,8 @@ private:
     void audioPlaybackLoop();
     void audioCaptureLoop();
     void playAudioUrl(const char* url);
+    static esp_err_t webSocketHandler(httpd_req_t* req);
+    static void webSocketCloseHandler(httpd_handle_t server, int fd);
     static void audioPlaybackTaskEntry(void* arg);
     static void audioCaptureTaskEntry(void* arg);
 };

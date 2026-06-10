@@ -17,12 +17,11 @@ export const config = {
   publicBaseUrl:
     Bun.env.STACKY_PUBLIC_BASE_URL ??
     `http://localhost:${numberFromEnv("STACKY_SERVER_PORT", 6001)}`,
-  deviceToken: Bun.env.STACKY_DEVICE_TOKEN ?? "dev-token-change-me",
+  deviceWsUrl: Bun.env.STACKY_DEVICE_WS_URL,
   openrouterApiKey: Bun.env.OPENROUTER_API_KEY,
   deepgramApiKey: Bun.env.DEEPGRAM_API_KEY,
   deepgramTtsModel: "aura-2-pandora-en",
   openrouterModel: "anthropic/claude-haiku-4.5:nitro",
-  voiceMock: booleanFromEnv("STACKY_VOICE_MOCK", false),
   wakeWord: {
     enabled: booleanFromEnv("STACKY_WAKE_WORD_ENABLED", true),
     phrase: Bun.env.STACKY_WAKE_WORD_PHRASE ?? Bun.env.STACKY_WAKE_WORD ?? "Stacky",
@@ -36,10 +35,9 @@ export function healthConfig() {
     host: config.host,
     port: config.port,
     publicBaseUrl: config.publicBaseUrl,
+    hasDeviceWsUrl: Boolean(config.deviceWsUrl),
     hasOpenrouterApiKey: Boolean(config.openrouterApiKey),
     hasDeepgramApiKey: Boolean(config.deepgramApiKey),
-    voiceMock: config.voiceMock,
-    hasDeviceToken: Boolean(config.deviceToken),
     wakeWord: {
       enabled: config.wakeWord.enabled,
       phrase: config.wakeWord.phrase,

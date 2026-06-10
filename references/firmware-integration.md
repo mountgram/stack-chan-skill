@@ -63,23 +63,11 @@ GetMooncake().installApp(std::make_unique<AppRemoteAgent>());
 
 Keep `AppLauncher` installed first. A safe placement is after `AppAvatar()` and before setup/utility apps.
 
-## Configure WebSocket URL
+## Configure WebSocket Server
 
-The firmware supports a compile-time `STACKY_WS_URL` define. Prefer passing it through the firmware build environment instead of editing private IPs into reusable source:
+The firmware hosts `ws://<stackchan>:6001/stacky/device`. It requires the `esp_http_server` component and `CONFIG_HTTPD_WS_SUPPORT=y`; `scripts/patch-stackchan.sh` applies those build settings.
 
-```bash
-STACKY_WS_URL='ws://LAN_HOST:6001/stacky/device?token=dev-token-change-me' idf.py build
-```
-
-If upstream CMake does not forward this environment variable, add this to `vendor/StackChan/firmware/main/CMakeLists.txt` near the component compile definitions:
-
-```cmake
-if(DEFINED ENV{STACKY_WS_URL})
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE "STACKY_WS_URL=\"$ENV{STACKY_WS_URL}\"")
-endif()
-```
-
-Do not commit a private LAN IP or token to reusable files.
+Do not commit private LAN IPs to reusable files. Put the StackChan URL in the brain server environment as `STACKY_DEVICE_WS_URL`. Firmware does not construct brain URLs; the brain sends full device-reachable URLs in commands.
 
 ## App Behavior
 
@@ -87,7 +75,7 @@ Do not commit a private LAN IP or token to reusable files.
 
 - show `REMOTE.AGENT` in the launcher
 - open automatically after boot while preserving the launcher and home button path back to it
-- connect to the brain WebSocket
+- host the device WebSocket and know when the brain is connected
 - send `hello`, telemetry, tap events, audio frames, and camera frames
 - receive screen, face, look, led, speak, startAudio, stopAudio, captureImage, stop, home, and ping commands
 - receive standby commands; if wake-word support is present, arm the server-selected local detector only in standby

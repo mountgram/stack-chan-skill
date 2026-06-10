@@ -48,7 +48,7 @@ First, read the skill's SKILL.md and only the references needed for this setup. 
 3. Clone the official StackChan firmware into vendor/StackChan if it is not already present.
 4. Add this skill's app_remote_agent firmware app to the local StackChan firmware.
 5. Patch and register the app as documented by the skill, including booting directly into `REMOTE.AGENT` while keeping the launcher available from the home button.
-6. Create or update a Bun/TypeScript brain server in this project that can receive the robot WebSocket connection.
+6. Create or update a Bun/TypeScript brain server in this project that connects out to the robot-hosted WebSocket.
 7. Add server-selected standby support. The server should be able to choose tap-only standby or wake-word standby when the firmware advertises wake-word capability.
 8. Tell me what environment variables I need to set, without inventing secrets or hard-coding my private LAN details.
 9. Build what can be built safely.
@@ -65,14 +65,14 @@ When an agent uses this skill, it should start by making the local setup concret
 3. If ESP-IDF is missing, follow `references/esp-idf-install.md` and install ESP-IDF v5.5.4 into `vendor/esp-idf`.
 4. Check whether `vendor/StackChan` exists in this skill folder.
 5. If the official StackChan firmware is missing, follow `references/vendor-stackchan.md` and clone `https://github.com/m5stack/StackChan` into `vendor/StackChan`.
-6. Run or apply the documented firmware patch so the robot app can receive the brain server WebSocket URL at build time.
+6. Run or apply the documented firmware patch so the robot app can host its WebSocket endpoint.
 7. Link or copy `assets/app_remote_agent/` into `vendor/StackChan/firmware/main/apps/app_remote_agent/`.
 8. Register `AppRemoteAgent` in the local StackChan firmware app list so it appears as a runnable app on the robot.
 9. Apply `assets/app_remote_agent/boot-into-remote-agent.sh` so the launcher opens `REMOTE.AGENT` once at boot.
 10. Build from `vendor/StackChan/firmware`, after sourcing `vendor/esp-idf/export.sh` in the same shell.
 11. Create or update the Bun/TypeScript brain server in the user's robot brain project.
 12. If wake-word standby is requested, read `references/wake-word-standby.md`, train or package the requested model, and make firmware advertise `wakeWord` only after a real detector is integrated.
-13. Verify server health, firmware URL/token config, and device WebSocket protocol compatibility.
+13. Verify server health, `STACKY_DEVICE_WS_URL`, and device WebSocket protocol compatibility.
 14. Flash only when hardware is connected and the serial port choice is explicit.
 
 ## The Robot App This Skill Adds
@@ -82,7 +82,7 @@ When an agent uses this skill, it should start by making the local setup concret
 Its job is to make StackChan act like a Wi-Fi robot terminal:
 
 - it starts on the StackChan hardware
-- it connects to your computer's brain server over WebSocket
+- it hosts a WebSocket server that your computer's brain connects to
 - it sends robot events like button presses, audio, images, telemetry, and connection status
 - it receives commands like speak, show text, change face, move servos, set LEDs, and capture audio/image data
 - it can enter standby where the server decides whether tap-to-talk is enough or whether a local wake-word detector should also be armed
@@ -129,13 +129,14 @@ Current references cover:
 - server-selected wake-word standby with OHF microWakeWord training and firmware packaging
 - minimal Bun brain starter
 - full-stack voice agent starter with Deepgram and AI SDK tools
+- Tailscale/LAN proxying for remote brain servers
 - troubleshooting
 
 ### `assets/app_remote_agent/`
 
 Reusable robot-side firmware app files for the StackChan side of the remote-agent system.
 
-These files implement the thin robot terminal behavior: connect to the brain server over WebSocket, exchange JSON commands/events, and support device capabilities exposed by the firmware.
+These files implement the thin robot terminal behavior: host the device WebSocket, exchange JSON commands/events with the brain, and support device capabilities exposed by the firmware.
 
 The remote-agent assets also include the local wake-word runner and generated model packaging files when wake-word support is enabled. Those files keep detection local to the robot while preserving the normal server-side voice pipeline after wake.
 
@@ -145,7 +146,7 @@ The helper script `assets/app_remote_agent/boot-into-remote-agent.sh` patches th
 
 ### `assets/stacky-websocket-client.ts`
 
-A TypeScript example client for the device protocol. Agents can use this to understand or test the expected JSON and binary WebSocket messages.
+A TypeScript brain-side client for the device protocol. Agents can use this to understand or test the expected JSON and binary WebSocket messages.
 
 ### `assets/fullstack-agent/`
 
@@ -153,9 +154,11 @@ A bundled Bun/TypeScript starter app for a more complete server-side brain.
 
 It includes server routes, device protocol helpers, command safety, Deepgram voice plumbing, AI SDK tool wiring, a prompt file, tests, and a debug page. It is a template source for your own robot brain project, not a place to store your personal robot's secrets or long-term custom behavior.
 
+It also includes `scripts/stacky-ws-proxy.ts`, a small Tailscale/LAN WebSocket proxy. Run it on a LAN machine that can reach StackChan and is also on your Tailscale tailnet; a remote brain server can then connect to the proxy's MagicDNS name or `100.x.y.z` address as if it were connecting directly to StackChan.
+
 ### `scripts/patch-stackchan.sh`
 
-A small helper that patches the local copy of the official StackChan firmware so the robot app can be built with the WebSocket URL of your brain server.
+A small helper that patches the local copy of the official StackChan firmware for HTTPD WebSocket server support.
 
 Run this only after `vendor/StackChan` exists.
 

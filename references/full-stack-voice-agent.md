@@ -6,7 +6,7 @@ This reference is a reconstruction recipe. Do not assume the target repo already
 
 ## Target Behavior
 
-- StackChan firmware connects to `WS /stacky/device`.
+- StackChan firmware hosts `WS /stacky/device`; the brain connects out to it.
 - The server receives device JSON events and binary mic/camera frames.
 - A tap starts a voice conversation.
 - Device PCM audio streams to Deepgram live STT.
@@ -53,7 +53,7 @@ Add other AI SDK providers only when needed, for example `@ai-sdk/anthropic`, `@
 ```dotenv
 STACKY_SERVER_HOST=0.0.0.0
 STACKY_SERVER_PORT=6001
-STACKY_DEVICE_TOKEN=dev-token-change-me
+STACKY_DEVICE_WS_URL=ws://STACKCHAN_HOST:6001/stacky/device
 STACKY_PUBLIC_BASE_URL=http://LAN_HOST:6001
 
 AI_PROVIDER=openai
@@ -65,7 +65,7 @@ DEEPGRAM_STT_MODEL=nova-3
 DEEPGRAM_TTS_MODEL=aura-2-pandora-en
 ```
 
-`STACKY_PUBLIC_BASE_URL` must be reachable from StackChan over the LAN. Do not use `localhost` in URLs the device must fetch.
+`STACKY_DEVICE_WS_URL` points at the WebSocket server hosted by StackChan. The brain sends full URLs in device commands; `STACKY_PUBLIC_BASE_URL` is the base it uses when generating those URLs for local audio endpoints. Do not use `localhost` in URLs the device must fetch.
 
 Minimal `config.ts`:
 
@@ -81,7 +81,7 @@ export const config = {
   host: Bun.env.STACKY_SERVER_HOST ?? "0.0.0.0",
   port: numberFromEnv("STACKY_SERVER_PORT", 6001),
   publicBaseUrl: Bun.env.STACKY_PUBLIC_BASE_URL ?? `http://localhost:${numberFromEnv("STACKY_SERVER_PORT", 6001)}`,
-  deviceToken: Bun.env.STACKY_DEVICE_TOKEN ?? "dev-token-change-me",
+  deviceWsUrl: Bun.env.STACKY_DEVICE_WS_URL,
   aiProvider: Bun.env.AI_PROVIDER ?? "openai",
   aiModel: Bun.env.AI_MODEL || undefined,
   deepgramApiKey: Bun.env.DEEPGRAM_API_KEY,
@@ -491,7 +491,6 @@ Required routes:
 | `POST /api/voice/start` | Start tap-to-talk conversation from browser. |
 | `POST /api/voice/stop` | Stop conversation and enter standby. |
 | `POST /api/command` | Manual device command for debugging. |
-| `WS /stacky/device` | Firmware WebSocket. |
 | `WS /stacky/debug` | Browser debug event stream. |
 
 `GET /audio/:id` should first check `liveAudioStreams`, then `.stacky-audio` files:
@@ -506,14 +505,16 @@ if (liveAudioStreams.has(id)) {
 }
 ```
 
-WebSocket upgrade:
+Device WebSocket client:
 
 ```ts
-if (url.pathname === "/stacky/device") {
-  const token = url.searchParams.get("token") ?? req.headers.get("x-stacky-token");
-  if (token !== config.deviceToken) return new Response("unauthorized", { status: 401 });
-  return server.upgrade(req, { data: { kind: "device" } }) ? undefined : new Response("upgrade failed", { status: 400 });
-}
+const ws = new WebSocket(config.deviceWsUrl);
+ws.binaryType = "arraybuffer";
+ws.addEventListener("open", () => registry.attachDevice(ws));
+ws.addEventListener("message", (event) => {
+  if (typeof event.data === "string") handleDeviceJson(event.data);
+  else handleDeviceBinary(new Uint8Array(event.data as ArrayBufferLike));
+});
 ```
 
 On device WebSocket open:
@@ -565,7 +566,7 @@ Do not expose secrets in debug HTML or `/health`.
 - `bunx tsc --noEmit` passes.
 - `bun test` passes for safety clamps if tests exist.
 - `GET /health` returns config booleans and disconnected device state.
-- Device connects to `WS /stacky/device?token=...` and sends `hello`.
+- Brain connects to `STACKY_DEVICE_WS_URL`; device sends `hello` after the WebSocket opens.
 - `/stacky/debug` receives connection and telemetry events.
 - Manual `screen`, `face`, `look`, `led`, `home`, and `stop` commands work.
 - Tap starts live STT and sends `startAudio`.

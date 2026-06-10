@@ -11,14 +11,9 @@ Read this when building, flashing, or monitoring StackChan firmware.
 
 ## Standard Build
 
-Source the main repo's `.env` (which provides `STACKY_PUBLIC_BASE_URL` and `STACKY_DEVICE_TOKEN`). `STACKY_WS_URL` will be auto-constructed from those if not already set. Then from the `stack-chan-skill` skill root:
+From the `stack-chan-skill` skill root:
 
 ```bash
-set -a && . ../../../.env && set +a
-if [ -z "$STACKY_WS_URL" ] && [ -n "$STACKY_PUBLIC_BASE_URL" ] && [ -n "$STACKY_DEVICE_TOKEN" ]; then
-    WS_BASE=$(echo "$STACKY_PUBLIC_BASE_URL" | sed 's|^http|ws|')
-    export STACKY_WS_URL="${WS_BASE}/stacky/device?token=${STACKY_DEVICE_TOKEN}"
-fi
 . ./vendor/esp-idf/export.sh
 cd vendor/StackChan/firmware
 python3 ./fetch_repos.py
@@ -33,15 +28,9 @@ idf.py set-target esp32s3
 
 Do not run `set-target` casually if preserving local `sdkconfig` changes matters; it can reinitialize build configuration.
 
-## Build With WebSocket URL
+## Device WebSocket URL
 
-Prefer sourcing the main repo `.env` (see Standard Build above) which should export `STACKY_WS_URL`. To override inline from `vendor/StackChan/firmware` after sourcing ESP-IDF:
-
-```bash
-STACKY_WS_URL='ws://LAN_HOST:6001/stacky/device?token=TOKEN' idf.py build
-```
-
-Use a LAN IP or hostname StackChan can reach. `localhost` points at StackChan itself, not the development machine.
+The firmware no longer needs a brain URL at build time. After flashing, configure the brain server with `STACKY_DEVICE_WS_URL=ws://STACKCHAN_HOST:6001/stacky/device`.
 
 ## Flash
 

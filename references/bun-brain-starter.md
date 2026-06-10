@@ -47,14 +47,12 @@ src/
 ```dotenv
 STACKY_SERVER_HOST=0.0.0.0
 STACKY_SERVER_PORT=6001
-STACKY_DEVICE_TOKEN=dev-token-change-me
+STACKY_DEVICE_WS_URL=ws://STACKCHAN_HOST:6001/stacky/device
 STACKY_PUBLIC_BASE_URL=http://LAN_HOST:6001
-AI_PROVIDER=mock
-AI_MODEL=
 DEEPGRAM_API_KEY=
 ```
 
-`STACKY_PUBLIC_BASE_URL` must be reachable by StackChan over the LAN. Do not use `localhost` for URLs the device must fetch.
+`STACKY_DEVICE_WS_URL` points at the WebSocket server hosted by StackChan. The brain sends full URLs in device commands; `STACKY_PUBLIC_BASE_URL` is the base it uses when generating those URLs for local audio endpoints. Do not use `localhost` for URLs the device must fetch.
 
 ## Required Routes
 
@@ -65,8 +63,12 @@ DEEPGRAM_API_KEY=
 | `GET /audio/:id` | Serve generated PCM audio to firmware. |
 | `POST /api/prompt` | Text prompt into the agent. |
 | `POST /api/command` | Manual StackChan command for debugging. |
-| `WS /stacky/device` | Firmware WebSocket. |
+| outbound `STACKY_DEVICE_WS_URL` | Device-hosted firmware WebSocket. |
 | `WS /stacky/debug` | Browser debug event stream. |
+
+## Remote Brain Through Tailscale
+
+If the brain runs on Hetzner, run `bun run proxy:stacky` on a LAN machine that can reach StackChan and is on the same Tailscale tailnet. Set the Hetzner brain's `STACKY_DEVICE_WS_URL` to `ws://LAN-MACHINE-MAGICDNS:6002/stacky/device`. The proxy forwards text and binary WebSocket frames unchanged to `STACKY_PROXY_TARGET_WS_URL`.
 
 ## Device Layer Requirements
 

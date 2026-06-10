@@ -19,6 +19,10 @@ const LISTEN_TIMEOUT_MS = 15_000;
 const DOUBLE_TAP_MS = 450;
 const SPEECH_ACTIVITY_RMS = 600;
 
+function deviceReachableUrl(value: string) {
+  return new URL(value, config.publicBaseUrl).toString();
+}
+
 // Persistent voice session state
 let sttSession: DeepgramLiveSession | undefined;
 let ttsSession: DeepgramStreamingTts | undefined;
@@ -29,6 +33,8 @@ let activeSpeechId: string | undefined;
 let activeSpeechFinished = false;
 let earlySpeechDone = false;
 let listenTimeout: Timer | undefined;
+let deviceReconnectTimer: Timer | undefined;
+let deviceClient: WebSocket | undefined;
 let lastTapAt = 0;
 let conversationGeneration = 0;
 const conversationMessages: ModelMessage[] = [];
@@ -175,7 +181,6 @@ function closeVoiceSessions() {
 }
 
 async function ensureStt() {
-  if (config.voiceMock) return;
   if (!sttSession) {
     sttSession = new DeepgramLiveSession(handleSttEvent);
     await sttSession.start();
@@ -183,7 +188,6 @@ async function ensureStt() {
 }
 
 async function ensureTts() {
-  if (config.voiceMock) return;
   if (!ttsSession) {
     ttsSession = new DeepgramStreamingTts();
     await ttsSession.start();
@@ -248,6 +252,83 @@ function handleTap() {
 
   action.catch((error) => {
     registry.handleDeviceMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });
+  });
+}
+
+function handleDeviceTextMessage(message: string, sendError: (message: string) => void) {
+  try {
+    const parsed = parseDeviceMessage(message);
+    registry.handleDeviceMessage(parsed);
+    if (parsed.type === "hello") showStandby();
+    if (parsed.type === "event") {
+      const event = (parsed as { event?: string }).event;
+      if (event === "speechDone") handleSpeechDone();
+      if (event === "tap") handleTap();
+      if (event === "cameraImage") {
+        const camera = parsed as { requestId?: string; mediaType?: string; width?: number; height?: number };
+        pendingCameraImage = {
+          requestId: camera.requestId ?? "",
+          mediaType: camera.mediaType ?? "image/jpeg",
+          width: camera.width,
+          height: camera.height,
+        };
+      }
+      if (event === "wakeWord") {
+        startConversation().catch((error) => {
+          registry.handleDeviceMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });
+        });
+      }
+    }
+  } catch (error) {
+    sendError(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+  }
+}
+
+function scheduleDeviceReconnect() {
+  if (!config.deviceWsUrl || deviceReconnectTimer) return;
+  deviceReconnectTimer = setTimeout(() => {
+    deviceReconnectTimer = undefined;
+    connectToStackyDevice();
+  }, 3000);
+}
+
+function connectToStackyDevice() {
+  if (!config.deviceWsUrl || deviceClient) return;
+
+  const ws = new WebSocket(config.deviceWsUrl);
+  deviceClient = ws;
+  ws.binaryType = "arraybuffer";
+
+  ws.addEventListener("open", () => {
+    console.log(`[device] connected ${config.deviceWsUrl}`);
+    registry.attachDevice(ws);
+    device.volume(registry.getVolume());
+    showStandby();
+  });
+
+  ws.addEventListener("message", (event) => {
+    if (typeof event.data === "string") {
+      handleDeviceTextMessage(event.data, (payload) => ws.send(payload));
+      return;
+    }
+    handleBinaryDeviceMessage(new Uint8Array(event.data as ArrayBufferLike));
+  });
+
+  ws.addEventListener("close", () => {
+    console.log("[device] disconnected");
+    if (deviceClient === ws) deviceClient = undefined;
+    registry.detachDevice(ws);
+    closeVoiceSessions();
+    scheduleDeviceReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    if (deviceClient === ws) deviceClient = undefined;
+    try {
+      ws.close();
+    } catch {
+      scheduleDeviceReconnect();
+    }
   });
 }
 
@@ -369,19 +450,12 @@ function finishSpeechTurn() {
 }
 
 export function createServer() {
-  return Bun.serve<StackyWsData>({
+  const server = Bun.serve<StackyWsData>({
     hostname: config.host,
     port: config.port,
     idleTimeout: 60,
     async fetch(req, server) {
       const url = new URL(req.url);
-
-      if (url.pathname === "/stacky/device") {
-        const token = url.searchParams.get("token") ?? req.headers.get("x-stacky-token");
-        if (token !== config.deviceToken) return new Response("unauthorized", { status: 401 });
-        const ok = server.upgrade(req, { data: { kind: "device", authed: true } });
-        return ok ? undefined : new Response("upgrade failed", { status: 400 });
-      }
 
       if (url.pathname === "/stacky/debug") {
         const ok = server.upgrade(req, { data: { kind: "debug" } });
@@ -438,7 +512,7 @@ export function createServer() {
           if (type === "led") return json(device.led(String(body.color ?? "#33cc99")));
           if (type === "home") return json(device.home());
           if (type === "stop") return json(device.stop());
-          if (type === "speak") return json(device.speak(String(body.text ?? ""), typeof body.audioUrl === "string" ? body.audioUrl : undefined));
+          if (type === "speak") return json(device.speak(String(body.text ?? ""), typeof body.audioUrl === "string" ? deviceReachableUrl(body.audioUrl) : undefined));
           if (type === "captureImage") return json(device.captureImage(undefined, Boolean(body.enhance), Boolean(body.preview)));
           if (type === "volume") return json(device.volume(Number(body.volume ?? registry.getVolume())));
           if (type === "startAudio") return json(await startConversation());
@@ -470,53 +544,15 @@ export function createServer() {
     websocket: {
       open(ws) {
         if (ws.data.kind === "debug") registry.attachDebug(ws);
-        if (ws.data.kind === "device") {
-          registry.attachDevice(ws);
-          device.volume(registry.getVolume());
-          showStandby();
-        }
       },
       async message(ws, message) {
-        if (ws.data.kind !== "device") return;
-        if (typeof message !== "string") {
-          const bytes = new Uint8Array(message as unknown as ArrayBufferLike);
-          handleBinaryDeviceMessage(bytes);
-          return;
-        }
-        try {
-          const parsed = parseDeviceMessage(message);
-          registry.handleDeviceMessage(parsed);
-          if (parsed.type === "hello") showStandby();
-          if (parsed.type === "event") {
-            const event = (parsed as { event?: string }).event;
-            if (event === "speechDone") handleSpeechDone();
-            if (event === "tap") handleTap();
-            if (event === "cameraImage") {
-              const camera = parsed as { requestId?: string; mediaType?: string; width?: number; height?: number };
-              pendingCameraImage = {
-                requestId: camera.requestId ?? "",
-                mediaType: camera.mediaType ?? "image/jpeg",
-                width: camera.width,
-                height: camera.height,
-              };
-            }
-            if (event === "wakeWord") {
-              startConversation().catch((error) => {
-                registry.handleDeviceMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });
-              });
-            }
-          }
-        } catch (error) {
-          ws.send(JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-        }
+        if (ws.data.kind !== "debug") return;
       },
       close(ws) {
         if (ws.data.kind === "debug") registry.detachDebug(ws);
-        if (ws.data.kind === "device") {
-          registry.detachDevice(ws);
-          closeVoiceSessions();
-        }
       },
     },
   });
+  connectToStackyDevice();
+  return server;
 }

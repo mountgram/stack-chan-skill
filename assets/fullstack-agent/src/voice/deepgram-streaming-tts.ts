@@ -156,7 +156,7 @@ export class DeepgramStreamingTts {
       }
     })();
 
-    return { id, url: `${config.publicBaseUrl.replace(/\/$/, "")}/audio/${id}`, stream, started, text, done };
+    return { id, url: new URL(`/audio/${id}`, config.publicBaseUrl).toString(), stream, started, text, done };
   }
 
   close() {

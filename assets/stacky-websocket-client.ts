@@ -1,13 +1,12 @@
 /*
- * StackChan WebSocket protocol client example.
+ * StackChan WebSocket protocol brain-client example.
  *
- * This file acts like a StackChan device. It connects to the brain server's
- * /stacky/device WebSocket, sends the device-to-server messages, receives every
- * server-to-device command, and illustrates the binary audio/camera packet
- * formats used by assets/app_remote_agent/.
+ * StackChan hosts /stacky/device. This connects to the device-hosted WebSocket,
+ * receives device-to-brain messages, sends brain-to-device commands, and shows
+ * the binary audio/camera packet formats used by assets/app_remote_agent/.
  *
  * Run with Bun:
- *   STACKY_WS_URL="ws://LAN_HOST:6001/stacky/device?token=dev-token-change-me" \
+ *   STACKY_DEVICE_WS_URL="ws://STACKCHAN_IP:6001/stacky/device" \
  *     bun run assets/stacky-websocket-client.ts
  */
 
@@ -15,12 +14,12 @@ type DeviceMode = "offline" | "connecting" | "connected" | "standby" | "listenin
 type FaceEmotion = "none" | "neutral" | "happy" | "angry" | "sad" | "doubt" | "sleepy";
 type LedPattern = "solid" | "pulse" | "off";
 
-type DeviceToServerMessage =
+type DeviceToBrainMessage =
   | { type: "hello"; id: string; version: number; capabilities: string[] }
   | { type: "telemetry"; battery: number; charging: boolean; wifiRssi: number; pose: { yaw: number; pitch: number }; volume: number }
-  | { type: "event"; event: "tap" | "hold" | "stop" | "speechDone" | "wakeWord" | string; at?: number; wakeWord?: string; phrase?: string; modelId?: string; score?: number }
+  | { type: "event"; event: "tap" | "hold" | "stop" | "speechDone" | "wakeWord" | "cameraImage" | string; at?: number; requestId?: string; mediaType?: string; width?: number; height?: number }
   | { type: "ack"; requestId: string; ok: true }
-  | { type: "error"; requestId: string; message: string };
+  | { type: "error"; requestId?: string; message: string };
 
 type AvatarFeature = {
   x?: number;
@@ -30,7 +29,7 @@ type AvatarFeature = {
   size?: number;
 };
 
-type ServerToDeviceCommand =
+type BrainToDeviceCommand =
   | { type: "screen"; requestId: string; mode?: DeviceMode; text: string }
   | { type: "face"; requestId: string; emotion: FaceEmotion }
   | { type: "look"; requestId: string; yaw?: number; pitch?: number; speed?: number }
@@ -39,7 +38,7 @@ type ServerToDeviceCommand =
   | { type: "startAudio"; requestId: string }
   | { type: "stopAudio"; requestId: string }
   | { type: "standby"; requestId: string; text?: string; wakeWord?: { enabled: boolean; phrase?: string; modelId?: string; modelUrl?: string } }
-  | { type: "captureImage"; requestId: string; enhance?: boolean }
+  | { type: "captureImage"; requestId: string; enhance?: boolean; preview?: boolean }
   | { type: "volume"; requestId: string; volume: number }
   | { type: "stop"; requestId: string; target?: "all" | "speech" | "motion" }
   | { type: "home"; requestId: string }
@@ -49,223 +48,79 @@ type ServerToDeviceCommand =
 
 const PACKET_AUDIO_PCM = 0x31;
 const PACKET_CAMERA_JPEG = 0x32;
+const wsUrl = process.env.STACKY_DEVICE_WS_URL ?? "ws://127.0.0.1:6001/stacky/device";
 
-const wsUrl = process.env.STACKY_WS_URL ?? "ws://127.0.0.1:6001/stacky/device?token=dev-token-change-me";
-
-let yaw = 0;
-let pitch = 35;
-let volume = 70;
-let audioTimer: Timer | undefined;
-let telemetryTimer: Timer | undefined;
-let wakeWordTimer: Timer | undefined;
+let pendingCameraImage: { requestId: string; mediaType: string; width?: number; height?: number } | undefined;
+let nextRequestId = 1;
 
 const ws = new WebSocket(wsUrl);
-
 ws.binaryType = "arraybuffer";
 
 ws.addEventListener("open", () => {
   console.log(`connected ${wsUrl}`);
-  sendJson({
-    type: "hello",
-    id: "stacky-client-example",
-    version: 1,
-    capabilities: ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "avatarJson", "decorator"],
-  });
-  sendTelemetry();
-  telemetryTimer = setInterval(sendTelemetry, 3000);
 });
 
-ws.addEventListener("message", async (event) => {
+ws.addEventListener("message", (event) => {
   if (typeof event.data !== "string") {
-    console.log("server sent binary data", event.data);
+    handleBinary(new Uint8Array(event.data as ArrayBufferLike));
     return;
   }
 
-  let command: ServerToDeviceCommand;
-  try {
-    command = JSON.parse(event.data) as ServerToDeviceCommand;
-  } catch {
-    sendJson({ type: "error", requestId: "", message: "invalid json" });
-    return;
+  const message = JSON.parse(event.data) as DeviceToBrainMessage;
+  console.log("device", message);
+
+  if (message.type === "hello") {
+    send({ type: "volume", requestId: requestId(), volume: 70 });
+    send({ type: "screen", requestId: requestId(), mode: "standby", text: "Brain connected" });
+    send({ type: "led", requestId: requestId(), color: "#33cc99", pattern: "solid" });
   }
 
-  console.log("command", command);
-  await handleCommand(command);
+  if (message.type === "event" && message.event === "cameraImage") {
+    pendingCameraImage = {
+      requestId: message.requestId ?? "",
+      mediaType: message.mediaType ?? "image/jpeg",
+      width: message.width,
+      height: message.height,
+    };
+  }
+
+  if (message.type === "event" && message.event === "tap") {
+    send({ type: "screen", requestId: requestId(), mode: "thinking", text: "Tap received" });
+  }
 });
 
 ws.addEventListener("close", () => {
   console.log("disconnected");
-  if (telemetryTimer) clearInterval(telemetryTimer);
-  if (audioTimer) clearInterval(audioTimer);
-  if (wakeWordTimer) clearTimeout(wakeWordTimer);
 });
 
 ws.addEventListener("error", (event) => {
   console.error("websocket error", event);
 });
 
-async function handleCommand(command: ServerToDeviceCommand) {
-  switch (command.type) {
-    case "screen":
-      console.log(`screen ${command.mode ?? "connected"}: ${command.text}`);
-      ack(command.requestId);
-      return;
+function send(command: BrainToDeviceCommand) {
+  console.log("command", command);
+  ws.send(JSON.stringify(command));
+}
 
-    case "face":
-      console.log(`face ${command.emotion}`);
-      ack(command.requestId);
-      return;
-
-    case "look":
-      yaw = clamp(command.yaw ?? yaw, -128, 128);
-      pitch = clamp(command.pitch ?? pitch, 5, 85);
-      console.log(`look yaw=${yaw} pitch=${pitch} speed=${command.speed ?? 0.5}`);
-      ack(command.requestId);
-      return;
-
-    case "led":
-      console.log(`led color=${command.color} pattern=${command.pattern ?? "solid"}`);
-      ack(command.requestId);
-      return;
-
-    case "speak":
-      console.log(`speak text=${command.text} audioUrl=${command.audioUrl ?? "none"}`);
-      ack(command.requestId);
-      await delay(500);
-      sendJson({ type: "event", event: "speechDone" });
-      return;
-
-    case "startAudio":
-      ack(command.requestId);
-      startAudioStream();
-      return;
-
-    case "stopAudio":
-      stopAudioStream();
-      ack(command.requestId);
-      return;
-
-    case "standby":
-      stopAudioStream();
-      stopWakeWordTimer();
-      console.log(`standby text=${command.text ?? ""} wakeWord=${command.wakeWord?.phrase ?? "none"}`);
-      ack(command.requestId);
-      if (command.wakeWord?.enabled) startWakeWordTimer(command.wakeWord.phrase ?? "Stacky", command.wakeWord.modelId ?? "stacky");
-      return;
-
-    case "captureImage":
-      ack(command.requestId);
-      sendCameraImage(command.requestId);
-      return;
-
-    case "volume":
-      volume = clamp(command.volume, 0, 100);
-      ack(command.requestId);
-      return;
-
-    case "stop":
-      stopAudioStream();
-      stopWakeWordTimer();
-      console.log(`stop target=${command.target ?? "all"}`);
-      ack(command.requestId);
-      return;
-
-    case "home":
-      yaw = 0;
-      pitch = 35;
-      ack(command.requestId);
-      return;
-
-    case "ping":
-      ack(command.requestId);
-      return;
-
-    case "avatarJson":
-      console.log("avatarJson", JSON.stringify(command));
-      ack(command.requestId);
-      return;
-
-    case "decorator":
-      console.log(`decorator action=${command.action} name=${command.name ?? "none"}`);
-      ack(command.requestId);
-      return;
+function handleBinary(bytes: Uint8Array) {
+  if (pendingCameraImage) {
+    console.log("camera image", { ...pendingCameraImage, bytes: bytes.byteLength });
+    pendingCameraImage = undefined;
+    return;
   }
+
+  if (bytes.length < 5) {
+    console.log("binary", bytes.byteLength);
+    return;
+  }
+
+  const type = bytes[0];
+  const length = ((bytes[1] ?? 0) << 24) | ((bytes[2] ?? 0) << 16) | ((bytes[3] ?? 0) << 8) | (bytes[4] ?? 0);
+  if (type === PACKET_AUDIO_PCM) console.log("audio pcm", length);
+  else if (type === PACKET_CAMERA_JPEG) console.log("legacy camera packet", length);
+  else console.log("unknown binary packet", { type, length });
 }
 
-function sendTelemetry() {
-  sendJson({
-    type: "telemetry",
-    battery: 82,
-    charging: false,
-    wifiRssi: -55,
-    pose: { yaw, pitch },
-    volume,
-  });
-}
-
-function startAudioStream() {
-  stopWakeWordTimer();
-  if (audioTimer) return;
-  audioTimer = setInterval(() => {
-    sendPacket(PACKET_AUDIO_PCM, makeSilentPcm(512));
-  }, 100);
-}
-
-function stopAudioStream() {
-  if (!audioTimer) return;
-  clearInterval(audioTimer);
-  audioTimer = undefined;
-}
-
-function startWakeWordTimer(phrase: string, modelId: string) {
-  wakeWordTimer = setTimeout(() => {
-    wakeWordTimer = undefined;
-    sendJson({ type: "event", event: "wakeWord", wakeWord: phrase, phrase, modelId, score: 1, at: Date.now() });
-  }, 3000);
-}
-
-function stopWakeWordTimer() {
-  if (!wakeWordTimer) return;
-  clearTimeout(wakeWordTimer);
-  wakeWordTimer = undefined;
-}
-
-function sendCameraImage(requestId: string) {
-  const metadata = new TextEncoder().encode(JSON.stringify({ requestId, width: 1, height: 1, mediaType: "image/jpeg" }));
-  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
-  const payload = new Uint8Array(metadata.length + jpeg.length);
-  payload.set(metadata, 0);
-  payload.set(jpeg, metadata.length);
-  sendPacket(PACKET_CAMERA_JPEG, payload, metadata.length);
-}
-
-function sendPacket(type: number, payload: Uint8Array, lengthOverride = payload.length) {
-  const packet = new Uint8Array(5 + payload.length);
-  packet[0] = type;
-  packet[1] = (lengthOverride >> 24) & 0xff;
-  packet[2] = (lengthOverride >> 16) & 0xff;
-  packet[3] = (lengthOverride >> 8) & 0xff;
-  packet[4] = lengthOverride & 0xff;
-  packet.set(payload, 5);
-  ws.send(packet);
-}
-
-function makeSilentPcm(frames: number) {
-  return new Uint8Array(frames * 2);
-}
-
-function ack(requestId: string) {
-  sendJson({ type: "ack", requestId, ok: true });
-}
-
-function sendJson(message: DeviceToServerMessage) {
-  ws.send(JSON.stringify(message));
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function requestId() {
+  return `cmd-${nextRequestId++}`;
 }

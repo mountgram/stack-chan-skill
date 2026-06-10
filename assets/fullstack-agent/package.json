@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun --hot src/index.ts",
     "start": "bun src/index.ts",
-    "demo:wake-word": "bun scripts/demo-wake-word.ts",
+    "proxy:stacky": "bun scripts/stacky-ws-proxy.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },

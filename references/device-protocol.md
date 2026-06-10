@@ -4,10 +4,11 @@ Read this when implementing firmware or server messages.
 
 ## Transport
 
-- Device connects to server WebSocket: `/stacky/device`.
-- Auth can use `?token=...` or an `x-stacky-token` header.
+- Device hosts WebSocket: `ws://STACKCHAN_HOST:6001/stacky/device`.
+- The brain server connects out to the device-hosted WebSocket.
 - JSON text frames carry commands and events.
 - Binary frames carry PCM audio or raw camera image payloads.
+- Any URL field sent to firmware, such as `speak.audioUrl` or `standby.wakeWord.modelUrl`, must be a full device-reachable URL. Firmware fetches it as-is and does not resolve relative paths against the WebSocket URL.
 
 ## Device To Server JSON
 

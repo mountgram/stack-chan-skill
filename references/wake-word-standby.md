@@ -6,7 +6,7 @@ Read this when adding local wake-word detection to `REMOTE.AGENT`.
 
 Use wake-word detection only as a standby trigger:
 
-1. Device connects and sends `hello`.
+1. Brain connects to the device-hosted WebSocket and device sends `hello`.
 2. Server enters standby and sends `standby`.
 3. If the device advertised `wakeWord`, the server may include `wakeWord`.
 4. Firmware arms the local detector and does not stream full PCM audio to the server.

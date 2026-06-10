@@ -33,7 +33,7 @@ This file tracks source material synthesized into `stack-chan-skill`.
 | Dimension | Status | Evidence |
 |---|---|---|
 | API surface and behavior contracts | complete | Protocol, firmware integration, and Bun starter references. |
-| Config/runtime options | complete | ESP-IDF vendor path, StackChan vendor path, `STACKY_WS_URL`, token, public base URL. |
+| Config/runtime options | complete | ESP-IDF vendor path, StackChan vendor path, `STACKY_DEVICE_WS_URL`, public base URL. |
 | Downstream use cases | complete | Blank repo setup, firmware integration, build/flash, server implementation, full voice agent, debug UI, audio/camera extensions. |
 | Known issues/workarounds | partial | Troubleshooting covers IDF, vendor paths, app registration, serial ports, malformed protocol, audio/camera limits, and the wake-word/post-playback audio restart wedge. |
 | Version variance | partial | ESP-IDF v5.5.4 and upstream StackChan main documented; future upstream changes require maintenance. |

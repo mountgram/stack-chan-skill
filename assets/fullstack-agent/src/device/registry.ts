@@ -2,8 +2,7 @@ import type { ServerWebSocket } from "bun";
 import type { DeviceCommand, DeviceMessage, DeviceTelemetry } from "./protocol";
 
 export type StackyWsData = {
-  kind: "device" | "debug" | "stt";
-  authed?: boolean;
+  kind: "debug" | "stt";
   id?: string;
   deepgram?: WebSocket;
   transcriptParts?: string[];
@@ -38,19 +37,22 @@ export type CameraImageSnapshot = {
   dataUrl: string;
 };
 
-type DeviceSocket = ServerWebSocket<StackyWsData>;
 type DebugSocket = ServerWebSocket<StackyWsData>;
+
+type SendableDeviceSocket = {
+  send(data: string | Uint8Array): unknown;
+};
 
 class Registry {
   private volume = 90;
-  private device?: DeviceSocket;
+  private device?: SendableDeviceSocket;
   private state?: DeviceState;
   private debugSockets = new Set<DebugSocket>();
   private log: unknown[] = [];
   private pendingImages = new Map<string, { resolve: (image: CameraImage) => void; reject: (error: Error) => void; timeout: Timer }>();
   private lastCameraImage?: CameraImageSnapshot;
 
-  attachDevice(ws: DeviceSocket, id = "stacky") {
+  attachDevice(ws: SendableDeviceSocket, id = "stacky") {
     this.device = ws;
     this.state = {
       id,
@@ -63,7 +65,7 @@ class Registry {
     this.broadcast({ type: "device-connected", id });
   }
 
-  detachDevice(ws: DeviceSocket) {
+  detachDevice(ws: SendableDeviceSocket) {
     if (this.device !== ws) return;
     this.device = undefined;
     if (this.state) {
