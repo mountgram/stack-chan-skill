@@ -100,7 +100,6 @@ private:
     std::queue<ReceivedMessage> _messages;
     QueueHandle_t _audio_playback_queue = nullptr;
     QueueHandle_t _audio_playback_pcm_queue = nullptr;
-    QueueHandle_t _audio_frame_queue    = nullptr;
     TaskHandle_t _audio_playback_task   = nullptr;
     TaskHandle_t _audio_capture_task    = nullptr;
     lv_obj_t* _root         = nullptr;
@@ -121,14 +120,11 @@ private:
     std::atomic_bool _camera_capture_active{false};
     std::atomic_bool _tasks_stopping{false};
     std::atomic<uint32_t> _audio_stream_started_at{0};
-    std::atomic<uint32_t> _last_audio_frame_queued_at{0};
     std::atomic<uint32_t> _last_audio_frame_sent_at{0};
-    std::atomic<uint32_t> _last_audio_drop_log_at{0};
     std::atomic_int _volume{90};
     std::atomic_int _mic_audio_level{0};
     std::atomic_int _playback_audio_level{0};
     std::atomic_int _audio_input_failures{0};
-    std::atomic_int _audio_frame_drops{0};
     int _current_emotion             = 0;
     int _yaw                        = 0;
     int _pitch                      = 35;
@@ -156,13 +152,12 @@ private:
     void startAudioTasks();
     void stopAudioTasks();
     void processMessages();
-    void sendQueuedAudioFrames();
     void applyPendingStatus();
     void handleMessage(const std::string& data);
     void sendJson(const std::string& data);
     void sendHello();
     void sendTelemetry();
-    void sendPacket(uint8_t type, const uint8_t* data, size_t len);
+    bool sendPacket(uint8_t type, const uint8_t* data, size_t len);
     void sendAck(const char* requestId);
     void sendError(const char* requestId, const char* message);
     void logHeap(const char* label);
