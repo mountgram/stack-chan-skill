@@ -176,7 +176,7 @@ private:
     void setStatus(const char* mode, const char* text);
     void queueStatus(const char* mode, const char* text);
     void setLog(const char* text);
-    bool ensureWakeWordDetector();
+    bool ensureWakeWordDetector(float cutoff, size_t sliding_window);
     void disarmWakeWord(uint32_t wait_ms = 0);
     void releaseWakeWordDetector();
     void handleWakeWordDetected(const std::string& wake_word);

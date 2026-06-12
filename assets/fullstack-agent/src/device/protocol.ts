@@ -4,6 +4,9 @@ export type FaceEmotion = "none" | "neutral" | "happy" | "angry" | "sad" | "doub
 export type WakeWordModelInfo = {
   id: string;
   phrase?: string;
+  sampleRate?: number;
+  cutoff?: number;
+  slidingWindow?: number;
   source?: "firmware" | "download";
 };
 
@@ -55,6 +58,8 @@ export type WakeWordConfig = {
   phrase?: string;
   modelId?: string;
   modelUrl?: string;
+  cutoff?: number;
+  slidingWindow?: number;
 };
 export type StandbyCommand = { type: "standby"; requestId: string; text?: string; wakeWord?: WakeWordConfig };
 export type CaptureImageCommand = { type: "captureImage"; requestId: string; enhance?: boolean; preview?: boolean };

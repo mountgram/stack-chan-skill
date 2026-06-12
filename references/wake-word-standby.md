@@ -93,6 +93,8 @@ Default server config:
 STACKY_WAKE_WORD_ENABLED=true
 STACKY_WAKE_WORD_PHRASE=Stacky
 STACKY_WAKE_WORD_MODEL_ID=stacky
+STACKY_WAKE_WORD_CUTOFF=0.99
+STACKY_WAKE_WORD_SLIDING_WINDOW=10
 # optional, only if firmware supports dynamic model loading:
 STACKY_WAKE_WORD_MODEL_URL=http://LAN_HOST:6001/models/stacky.json
 ```
@@ -107,7 +109,9 @@ The reusable server sends:
   "wakeWord": {
     "enabled": true,
     "phrase": "Stacky",
-    "modelId": "stacky"
+    "modelId": "stacky",
+    "cutoff": 0.99,
+    "slidingWindow": 10
   }
 }
 ```
@@ -126,7 +130,7 @@ Advertise wake-word support only after the local detector is real:
   "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "wakeWord", "render"],
   "wakeWord": {
     "version": 1,
-    "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.97, "slidingWindow": 5 }]
+    "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10 }]
   }
 }
 ```

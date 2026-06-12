@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -66,6 +67,8 @@ static constexpr size_t MIN_INTERNAL_SRAM_CAMERA = 12288;
 static constexpr size_t MIN_INTERNAL_SRAM_CAMERA_ENHANCED = 32768;
 static constexpr int CAMERA_PREVIEW_WIDTH = 160;
 static constexpr int CAMERA_PREVIEW_HEIGHT = 120;
+static constexpr float WAKE_WORD_DEFAULT_CUTOFF = 0.99f;
+static constexpr size_t WAKE_WORD_DEFAULT_SLIDING_WINDOW = 10;
 
 static int clamp_int(int value, int min, int max)
 {
@@ -120,6 +123,19 @@ static float read_float(ArduinoJson::JsonVariantConst value, float fallback)
     if (value.is<float>()) return value.as<float>();
     if (value.is<int>()) return static_cast<float>(value.as<int>());
     return fallback;
+}
+
+static float read_wake_word_cutoff(ArduinoJson::JsonVariantConst value)
+{
+    float cutoff = read_float(value, WAKE_WORD_DEFAULT_CUTOFF);
+    if (!std::isfinite(cutoff)) return WAKE_WORD_DEFAULT_CUTOFF;
+    return std::min(0.999f, std::max(0.5f, cutoff));
+}
+
+static size_t read_wake_word_sliding_window(ArduinoJson::JsonVariantConst value)
+{
+    int sliding_window = value.is<int>() ? value.as<int>() : static_cast<int>(WAKE_WORD_DEFAULT_SLIDING_WINDOW);
+    return static_cast<size_t>(clamp_int(sliding_window, 1, 20));
 }
 
 static int pcm_level_1000(const std::vector<int16_t>& samples)
@@ -799,12 +815,17 @@ void AppRemoteAgent::handleMessage(const std::string& data)
                 mclog::tagInfo(TAG, "wake word model unavailable; falling back to tap standby");
                 disarmWakeWord(500);
                 text = "Standby. Tap to talk.";
-            } else if (!ensureWakeWordDetector() || !_wake_word_detector->arm()) {
-                mclog::tagInfo(TAG, "wake word detector unavailable; falling back to tap standby");
-                disarmWakeWord(500);
-                text = "Standby. Tap to talk.";
             } else {
-                logHeap("after wake-word arm");
+                const float cutoff          = read_wake_word_cutoff(wake_word["cutoff"]);
+                const size_t sliding_window = read_wake_word_sliding_window(wake_word["slidingWindow"]);
+                releaseWakeWordDetector();
+                if (!ensureWakeWordDetector(cutoff, sliding_window) || !_wake_word_detector->arm()) {
+                    mclog::tagInfo(TAG, "wake word detector unavailable; falling back to tap standby");
+                    disarmWakeWord(500);
+                    text = "Standby. Tap to talk.";
+                } else {
+                    logHeap("after wake-word arm");
+                }
             }
         } else {
             disarmWakeWord(500);
@@ -1053,11 +1074,11 @@ bool AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
 void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
-    const bool wake_word_ready = ensureWakeWordDetector();
+    const bool wake_word_ready = ensureWakeWordDetector(WAKE_WORD_DEFAULT_CUTOFF, WAKE_WORD_DEFAULT_SLIDING_WINDOW);
     char buffer[1400];
     if (wake_word_ready) {
         snprintf(buffer, sizeof(buffer),
-                 R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.97,"slidingWindow":5}]},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+                 R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.99,"slidingWindow":10}]},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
                  id.c_str());
     } else {
         snprintf(buffer, sizeof(buffer),
@@ -1511,13 +1532,13 @@ void AppRemoteAgent::handleTap()
     sendJson(buffer);
 }
 
-bool AppRemoteAgent::ensureWakeWordDetector()
+bool AppRemoteAgent::ensureWakeWordDetector(float cutoff, size_t sliding_window)
 {
     if (_wake_word_detector) {
         return true;
     }
 
-    auto detector = std::make_unique<StackyWakeWordDetector>();
+    auto detector = std::make_unique<StackyWakeWordDetector>(cutoff, sliding_window);
     if (!detector->begin([this](const std::string& wake_word) { handleWakeWordDetected(wake_word); })) {
         return false;
     }

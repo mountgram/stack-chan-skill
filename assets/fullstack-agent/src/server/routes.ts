@@ -154,6 +154,8 @@ function showStandby() {
         phrase: config.wakeWord.phrase,
         modelId: config.wakeWord.modelId,
         modelUrl: config.wakeWord.modelUrl,
+        cutoff: config.wakeWord.cutoff,
+        slidingWindow: config.wakeWord.slidingWindow,
       }
     : undefined;
   const text = wakeWord ? `Standby. Say "${config.wakeWord.phrase}".` : "Standby. Tap to talk.";

@@ -24,10 +24,21 @@ namespace {
 
 constexpr const char* TAG = "STACKY.WAKE";
 constexpr int MODEL_SAMPLE_RATE = 16000;
-constexpr float STACKY_CUTOFF = 0.97f;
-constexpr size_t STACKY_SLIDING_WINDOW = 5;
+constexpr float STACKY_CUTOFF = 0.99f;
+constexpr size_t STACKY_SLIDING_WINDOW = 10;
 constexpr size_t STACKY_TENSOR_ARENA = 40000;
 constexpr uint8_t FEATURE_STEP_MS = 10;
+
+float clamp_cutoff(float cutoff)
+{
+    if (!std::isfinite(cutoff)) return STACKY_CUTOFF;
+    return std::min(0.999f, std::max(0.5f, cutoff));
+}
+
+size_t clamp_sliding_window(size_t sliding_window)
+{
+    return std::min<size_t>(20, std::max<size_t>(1, sliding_window));
+}
 
 class StackyAudioCodecMicrophone : public esphome::microphone::Microphone {
 public:
@@ -120,10 +131,17 @@ private:
 }  // namespace
 
 struct StackyWakeWordDetector::Impl {
+    Impl(float requested_cutoff, size_t requested_sliding_window)
+        : cutoff(clamp_cutoff(requested_cutoff)), sliding_window(clamp_sliding_window(requested_sliding_window))
+    {
+    }
+
     StackyAudioCodecMicrophone microphone;
     esphome::micro_wake_word::MicroWakeWord wake_word;
     StackyWakeWordDetector::Callback callback;
     TaskHandle_t task = nullptr;
+    float cutoff = STACKY_CUTOFF;
+    size_t sliding_window = STACKY_SLIDING_WINDOW;
     std::atomic_bool setup{false};
     std::atomic_bool task_running{false};
     std::atomic_bool armed{false};
@@ -138,7 +156,8 @@ struct StackyWakeWordDetector::Impl {
         callback = std::move(cb);
         wake_word.set_microphone(&microphone);
         wake_word.set_features_step_size(FEATURE_STEP_MS);
-        wake_word.add_wake_word_model(stacky_wake_word_tflite, STACKY_CUTOFF, STACKY_SLIDING_WINDOW, "Stacky",
+        ESP_LOGI(TAG, "wake-word model cutoff %.3f sliding_window %u", cutoff, static_cast<unsigned>(sliding_window));
+        wake_word.add_wake_word_model(stacky_wake_word_tflite, cutoff, sliding_window, "Stacky",
                                       STACKY_TENSOR_ARENA);
         wake_word.add_detection_callback([this](std::string wake_word_name) {
             armed = false;
@@ -234,7 +253,10 @@ struct StackyWakeWordDetector::Impl {
     }
 };
 
-StackyWakeWordDetector::StackyWakeWordDetector() : _impl(std::make_unique<Impl>()) {}
+StackyWakeWordDetector::StackyWakeWordDetector(float cutoff, size_t sliding_window)
+    : _impl(std::make_unique<Impl>(cutoff, sliding_window))
+{
+}
 
 StackyWakeWordDetector::~StackyWakeWordDetector()
 {

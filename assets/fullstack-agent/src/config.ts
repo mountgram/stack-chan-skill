@@ -24,6 +24,8 @@ export const config = {
     phrase: Bun.env.STACKY_WAKE_WORD_PHRASE ?? Bun.env.STACKY_WAKE_WORD ?? "Stacky",
     modelId: Bun.env.STACKY_WAKE_WORD_MODEL_ID ?? "stacky",
     modelUrl: Bun.env.STACKY_WAKE_WORD_MODEL_URL,
+    cutoff: numberFromEnv("STACKY_WAKE_WORD_CUTOFF", 0.99),
+    slidingWindow: numberFromEnv("STACKY_WAKE_WORD_SLIDING_WINDOW", 10),
   },
 };
 
@@ -39,6 +41,8 @@ export function healthConfig() {
       phrase: config.wakeWord.phrase,
       modelId: config.wakeWord.modelId,
       hasModelUrl: Boolean(config.wakeWord.modelUrl),
+      cutoff: config.wakeWord.cutoff,
+      slidingWindow: config.wakeWord.slidingWindow,
     },
   };
 }

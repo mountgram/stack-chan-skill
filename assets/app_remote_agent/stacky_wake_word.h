@@ -3,6 +3,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -12,7 +13,7 @@ class StackyWakeWordDetector {
 public:
     using Callback = std::function<void(const std::string&)>;
 
-    StackyWakeWordDetector();
+    StackyWakeWordDetector(float cutoff, size_t sliding_window);
     ~StackyWakeWordDetector();
 
     bool begin(Callback callback);
