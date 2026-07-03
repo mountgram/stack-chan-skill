@@ -17,7 +17,7 @@ type LedPattern = "solid" | "pulse" | "off";
 type DeviceToBrainMessage =
   | { type: "hello"; id: string; version: number; capabilities: string[] }
   | { type: "telemetry"; battery: number; charging: boolean; wifiRssi: number; pose: { yaw: number; pitch: number }; volume: number }
-  | { type: "event"; event: "tap" | "hold" | "stop" | "speechDone" | "wakeWord" | "cameraImage" | string; at?: number; requestId?: string; mediaType?: string; width?: number; height?: number }
+  | { type: "event"; event: "tap" | "hold" | "stop" | "speechStart" | "speechDone" | "speechInterrupted" | "bargeIn" | "wakeWord" | "cameraImage" | string; at?: number; requestId?: string; playbackId?: string; mediaType?: string; width?: number; height?: number }
   | { type: "ack"; requestId: string; ok: true }
   | { type: "error"; requestId?: string; message: string };
 
@@ -34,13 +34,14 @@ type BrainToDeviceCommand =
   | { type: "face"; requestId: string; emotion: FaceEmotion }
   | { type: "look"; requestId: string; yaw?: number; pitch?: number; speed?: number }
   | { type: "led"; requestId: string; color: string; pattern?: LedPattern }
-  | { type: "speak"; requestId: string; text: string; audioTransport?: "websocket"; sampleRate?: 24000 }
+  | { type: "speak"; requestId: string; text: string; playbackId?: string; audioTransport?: "websocket"; sampleRate?: 24000; bargeIn?: boolean }
   | { type: "startAudio"; requestId: string }
   | { type: "stopAudio"; requestId: string }
   | { type: "standby"; requestId: string; text?: string; wakeWord?: { enabled: boolean; phrase?: string; modelId?: string; modelUrl?: string } }
   | { type: "captureImage"; requestId: string; enhance?: boolean; preview?: boolean }
   | { type: "volume"; requestId: string; volume: number }
-  | { type: "stop"; requestId: string; target?: "all" | "speech" | "motion" }
+  | { type: "stop"; requestId: string; target?: "all" | "playback" | "speech" | "motion" }
+  | { type: "playbackClear"; requestId: string }
   | { type: "home"; requestId: string }
   | { type: "ping"; requestId: string; at: number }
   | { type: "avatarJson"; requestId: string; leftEye?: AvatarFeature; rightEye?: AvatarFeature; mouth?: AvatarFeature }

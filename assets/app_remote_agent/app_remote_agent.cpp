@@ -67,6 +67,8 @@ static constexpr size_t MIN_INTERNAL_SRAM_CAMERA = 12288;
 static constexpr size_t MIN_INTERNAL_SRAM_CAMERA_ENHANCED = 32768;
 static constexpr int CAMERA_PREVIEW_WIDTH = 160;
 static constexpr int CAMERA_PREVIEW_HEIGHT = 120;
+static constexpr int BARGE_IN_LEVEL_THRESHOLD = 250;
+static constexpr uint32_t PLAYBACK_DRAIN_CHECK_MS = 20;
 static constexpr float WAKE_WORD_DEFAULT_CUTOFF = 0.99f;
 static constexpr size_t WAKE_WORD_DEFAULT_SLIDING_WINDOW = 10;
 
@@ -264,7 +266,12 @@ static void panel_click_cb(lv_event_t* event)
 {
     auto* app = static_cast<AppRemoteAgent*>(lv_event_get_user_data(event));
     if (app) {
-        app->handleTap();
+        const lv_event_code_t code = lv_event_get_code(event);
+        if (code == LV_EVENT_LONG_PRESSED) {
+            app->handleHold();
+        } else if (code == LV_EVENT_CLICKED) {
+            app->handleTap();
+        }
     }
 }
 
@@ -316,6 +323,7 @@ void AppRemoteAgent::createUi()
     lv_obj_set_style_pad_all(_root, 10, 0);
     lv_obj_add_flag(_root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_root, panel_click_cb, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_root, panel_click_cb, LV_EVENT_LONG_PRESSED, this);
 
     _status_dot = lv_obj_create(_root);
     lv_obj_set_size(_status_dot, 14, 14);
@@ -326,6 +334,7 @@ void AppRemoteAgent::createUi()
     lv_obj_align(_status_dot, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_add_flag(_status_dot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_status_dot, panel_click_cb, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_status_dot, panel_click_cb, LV_EVENT_LONG_PRESSED, this);
 
     _main_label = lv_label_create(_root);
     lv_label_set_long_mode(_main_label, LV_LABEL_LONG_WRAP);
@@ -336,6 +345,7 @@ void AppRemoteAgent::createUi()
     lv_obj_align(_main_label, LV_ALIGN_CENTER, 0, -10);
     lv_obj_add_flag(_main_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_main_label, panel_click_cb, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_main_label, panel_click_cb, LV_EVENT_LONG_PRESSED, this);
 
     _log_label = lv_label_create(_root);
     lv_label_set_long_mode(_log_label, LV_LABEL_LONG_DOT);
@@ -345,6 +355,7 @@ void AppRemoteAgent::createUi()
     lv_obj_align(_log_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_add_flag(_log_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_log_label, panel_click_cb, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_log_label, panel_click_cb, LV_EVENT_LONG_PRESSED, this);
 }
 
 void AppRemoteAgent::startWebSocketServer()
@@ -410,14 +421,8 @@ void AppRemoteAgent::handleWebSocketConnected(int fd)
     _hello_pending = false;
     _websocket_fd = fd;
     _audio_streaming = false;
-    _audio_playback_cancel = true;
+    cancelPlayback(false);
     failPendingAudioStart("new brain connection opened");
-    if (_audio_playback_queue) {
-        xQueueReset(_audio_playback_queue);
-    }
-    if (_audio_playback_pcm_queue) {
-        xQueueReset(_audio_playback_pcm_queue);
-    }
     _mic_audio_level = 0;
     _playback_audio_level = 0;
     _connected = true;
@@ -432,14 +437,8 @@ void AppRemoteAgent::handleWebSocketDisconnected(int fd)
     _connected = false;
     _hello_pending = false;
     _audio_streaming = false;
-    _audio_playback_cancel = true;
+    cancelPlayback(false);
     failPendingAudioStart("connection closed before audio capture started");
-    if (_audio_playback_queue) {
-        xQueueReset(_audio_playback_queue);
-    }
-    if (_audio_playback_pcm_queue) {
-        xQueueReset(_audio_playback_pcm_queue);
-    }
     _mic_audio_level = 0;
     _playback_audio_level = 0;
     disarmWakeWord(500);
@@ -557,14 +556,7 @@ void AppRemoteAgent::stopAudioTasks()
     _tasks_stopping = true;
     _audio_streaming = false;
     _audio_start_pending = false;
-    _audio_playback_active = false;
-    _audio_playback_cancel = true;
-    if (_audio_playback_queue) {
-        xQueueReset(_audio_playback_queue);
-    }
-    if (_audio_playback_pcm_queue) {
-        xQueueReset(_audio_playback_pcm_queue);
-    }
+    cancelPlayback(false);
     const uint32_t started = xTaskGetTickCount();
     while ((_audio_playback_task || _audio_capture_task) && xTaskGetTickCount() - started < pdMS_TO_TICKS(1500)) {
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -749,6 +741,8 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     if (strcmp(type, "speak") == 0) {
         const char* audioUrl = doc["audioUrl"] | "";
         const char* audioTransport = doc["audioTransport"] | "";
+        const char* playbackId = doc["playbackId"] | "";
+        const bool bargeIn = doc["bargeIn"] | false;
         releaseWakeWordDetector();
         logHeap("before speak");
         if (!hasInternalSram(MIN_INTERNAL_SRAM_SPEAK, "speak")) {
@@ -763,20 +757,20 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             }
         }
         if (audioUrl && strlen(audioUrl) > 0) {
-            if (queueAudioPlayback(requestId, audioUrl)) {
+            if (queueAudioPlayback(requestId, playbackId, audioUrl, bargeIn)) {
                 sendAck(requestId);
             }
             return;
         }
         if (strcmp(audioTransport, "websocket") == 0) {
-            if (queueWebSocketAudioPlayback(requestId)) {
+            if (queueWebSocketAudioPlayback(requestId, playbackId, bargeIn)) {
                 sendAck(requestId);
             }
             return;
         }
         setStatus("speaking", "");
         mclog::tagInfo(TAG, "speechDone sent");
-        sendJson(R"({"type":"event","event":"speechDone"})");
+        sendPlaybackEvent("speechDone", playbackId);
         sendAck(requestId);
         return;
     }
@@ -861,14 +855,14 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "stop") == 0) {
+        const char* target = doc["target"] | "all";
+        if (strcmp(target, "playback") == 0 || strcmp(target, "speech") == 0) {
+            cancelPlayback(true);
+            sendAck(requestId);
+            return;
+        }
         _audio_streaming = false;
-        _audio_playback_cancel = true;
-        if (_audio_playback_queue) {
-            xQueueReset(_audio_playback_queue);
-        }
-        if (_audio_playback_pcm_queue) {
-            xQueueReset(_audio_playback_pcm_queue);
-        }
+        cancelPlayback(true);
         setStatus("connected", "Stopped");
         LvglLockGuard lock;
         GetStackChan().clearModifiers();
@@ -879,6 +873,12 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             _decorator_ids.clear();
             GetStackChan().avatar().clearSpeech();
         }
+        sendAck(requestId);
+        return;
+    }
+
+    if (strcmp(type, "playbackClear") == 0) {
+        cancelPlayback(true);
         sendAck(requestId);
         return;
     }
@@ -1042,7 +1042,7 @@ bool AppRemoteAgent::sendWebSocketFrame(const uint8_t* data, size_t len, bool bi
         _connected = false;
         _hello_pending = false;
         _audio_streaming = false;
-        _audio_playback_cancel = true;
+        cancelPlayback(false);
         queueStatus("offline", websocket_listen_url().c_str());
         return false;
     }
@@ -1075,15 +1075,15 @@ void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
     const bool wake_word_ready = ensureWakeWordDetector(WAKE_WORD_DEFAULT_CUTOFF, WAKE_WORD_DEFAULT_SLIDING_WINDOW);
-    char buffer[1400];
+    char buffer[1600];
     if (wake_word_ready) {
         snprintf(buffer, sizeof(buffer),
-                 R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.99,"slidingWindow":10}]},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
-                 id.c_str());
+                  R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","hold","audio","playbackControl","bargeIn","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.99,"slidingWindow":10}]},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+                  id.c_str());
     } else {
         snprintf(buffer, sizeof(buffer),
-                 R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","audio","camera","volume","standby","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
-                 id.c_str());
+                  R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","hold","audio","playbackControl","bargeIn","camera","volume","standby","render"],"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+                  id.c_str());
     }
     sendJson(buffer);
 }
@@ -1110,6 +1110,29 @@ void AppRemoteAgent::sendError(const char* requestId, const char* message)
     char buffer[192];
     snprintf(buffer, sizeof(buffer), R"({"type":"error","requestId":"%s","message":"%s"})", requestId ? requestId : "",
              message ? message : "error");
+    sendJson(buffer);
+}
+
+void AppRemoteAgent::sendPlaybackEvent(const char* event, const char* playbackId)
+{
+    char buffer[192];
+    if (playbackId && playbackId[0]) {
+        snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"%s","playbackId":"%s"})", event, playbackId);
+    } else {
+        snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"%s"})", event);
+    }
+    sendJson(buffer);
+}
+
+void AppRemoteAgent::sendBargeInEvent(const char* playbackId)
+{
+    char buffer[224];
+    const unsigned long at = (unsigned long)GetHAL().millis();
+    if (playbackId && playbackId[0]) {
+        snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"bargeIn","playbackId":"%s","at":%lu})", playbackId, at);
+    } else {
+        snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"bargeIn","at":%lu})", at);
+    }
     sendJson(buffer);
 }
 
@@ -1189,6 +1212,7 @@ bool AppRemoteAgent::renderSceneJson(const std::string& data)
     lv_obj_clear_flag(_render_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(_render_root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_render_root, panel_click_cb, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_render_root, panel_click_cb, LV_EVENT_LONG_PRESSED, this);
 
     std::vector<RenderFrame> frames;
     frames.reserve(nodes.size());
@@ -1527,8 +1551,23 @@ void AppRemoteAgent::handleTap()
 {
     disarmWakeWord(500);
     setLog("tap sent to brain");
+    if (_audio_playback_active || _audio_playback_pending) {
+        cancelPlayback(true);
+    }
     char buffer[96];
     snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"tap","at":%lu})", (unsigned long)GetHAL().millis());
+    sendJson(buffer);
+}
+
+void AppRemoteAgent::handleHold()
+{
+    disarmWakeWord(500);
+    setLog("hold sent to brain");
+    if (_audio_playback_active || _audio_playback_pending) {
+        cancelPlayback(true);
+    }
+    char buffer[96];
+    snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"hold","at":%lu})", (unsigned long)GetHAL().millis());
     sendJson(buffer);
 }
 
@@ -1627,32 +1666,132 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
     return true;
 }
 
-bool AppRemoteAgent::queueAudioPlayback(const char* requestId, const char* url)
+bool AppRemoteAgent::captureBargeInFrame()
+{
+    auto audio_codec = Board::GetInstance().GetAudioCodec();
+    if (!audio_codec) {
+        return false;
+    }
+
+    constexpr size_t chunk_frames = 256;
+    const size_t input_channels = std::max(audio_codec->input_channels(), 1);
+    const size_t input_samples = chunk_frames * input_channels;
+    if (_audio_input_chunk.size() != input_samples) {
+        _audio_input_chunk.resize(input_samples);
+    }
+    if (!audio_codec->InputData(_audio_input_chunk)) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return false;
+    }
+
+    uint64_t total = 0;
+    for (size_t i = 0; i < chunk_frames; ++i) {
+        total += static_cast<uint16_t>(std::abs(static_cast<int>(_audio_input_chunk[i * input_channels])));
+    }
+    const int average = static_cast<int>(total / chunk_frames);
+    const int level = clamp_int((average * 1000) / 12000, 0, 1000);
+    _mic_audio_level = smooth_level_1000(_mic_audio_level.load(), level);
+    if (level >= BARGE_IN_LEVEL_THRESHOLD && !_barge_in_reported.exchange(true)) {
+        char playbackId[64] = {0};
+        copyCurrentPlaybackId(playbackId, sizeof(playbackId));
+        sendBargeInEvent(playbackId);
+    }
+    return true;
+}
+
+void AppRemoteAgent::setCurrentPlaybackId(const char* playbackId)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    strncpy(_current_playback_id, playbackId ? playbackId : "", sizeof(_current_playback_id) - 1);
+    _current_playback_id[sizeof(_current_playback_id) - 1] = 0;
+}
+
+void AppRemoteAgent::copyCurrentPlaybackId(char* playbackId, size_t len)
+{
+    if (!playbackId || len == 0) return;
+    std::lock_guard<std::mutex> lock(_mutex);
+    strncpy(playbackId, _current_playback_id, len - 1);
+    playbackId[len - 1] = 0;
+}
+
+uint32_t AppRemoteAgent::nextPlaybackGeneration()
+{
+    return _audio_playback_generation.fetch_add(1) + 1;
+}
+
+void AppRemoteAgent::cancelPlayback(bool emit_event)
+{
+    const bool was_active = _audio_playback_active.exchange(false);
+    const bool was_pending = _audio_playback_pending.exchange(false);
+    const bool was_accepting = _websocket_playback_accepting.exchange(false);
+    _audio_playback_cancel = true;
+    _barge_in_enabled = false;
+    _barge_in_reported = false;
+    _playback_audio_level = 0;
+    nextPlaybackGeneration();
+
+    if (_audio_playback_queue) {
+        xQueueReset(_audio_playback_queue);
+    }
+    if (_audio_playback_pcm_queue) {
+        xQueueReset(_audio_playback_pcm_queue);
+        AudioPcmFrame end_frame;
+        end_frame.generation = _audio_playback_generation.load();
+        xQueueSend(_audio_playback_pcm_queue, &end_frame, 0);
+    }
+
+    if (emit_event && (was_active || was_pending || was_accepting) && !_audio_playback_interrupted_reported.exchange(true)) {
+        char playbackId[64] = {0};
+        copyCurrentPlaybackId(playbackId, sizeof(playbackId));
+        mclog::tagInfo(TAG, "speechInterrupted sent");
+        sendPlaybackEvent("speechInterrupted", playbackId);
+    }
+}
+
+bool AppRemoteAgent::queueAudioPlayback(const char* requestId, const char* playbackId, const char* url, bool bargeIn)
 {
     if (!_audio_playback_queue) {
         sendError(requestId, "audio playback unavailable");
         return false;
     }
+    cancelPlayback(true);
     AudioPlaybackRequest request;
     strncpy(request.requestId, requestId ? requestId : "", sizeof(request.requestId) - 1);
+    strncpy(request.playbackId, playbackId ? playbackId : "", sizeof(request.playbackId) - 1);
     strncpy(request.url, url ? url : "", sizeof(request.url) - 1);
+    request.generation = nextPlaybackGeneration();
+    request.bargeIn = bargeIn;
+    setCurrentPlaybackId(request.playbackId);
+    _audio_playback_pending = true;
+    _audio_playback_interrupted_reported = false;
     if (xQueueSend(_audio_playback_queue, &request, 0) != pdTRUE) {
+        _audio_playback_pending = false;
         sendError(requestId, "audio playback queue full");
         return false;
     }
     return true;
 }
 
-bool AppRemoteAgent::queueWebSocketAudioPlayback(const char* requestId)
+bool AppRemoteAgent::queueWebSocketAudioPlayback(const char* requestId, const char* playbackId, bool bargeIn)
 {
     if (!_audio_playback_queue || !_audio_playback_pcm_queue) {
         sendError(requestId, "audio playback unavailable");
         return false;
     }
+    cancelPlayback(true);
     AudioPlaybackRequest request;
     strncpy(request.requestId, requestId ? requestId : "", sizeof(request.requestId) - 1);
+    strncpy(request.playbackId, playbackId ? playbackId : "", sizeof(request.playbackId) - 1);
+    request.generation = nextPlaybackGeneration();
     request.websocket = true;
+    request.bargeIn = bargeIn;
+    setCurrentPlaybackId(request.playbackId);
+    _audio_playback_pending = true;
+    _audio_playback_interrupted_reported = false;
+    _websocket_playback_accepting = true;
     if (xQueueSend(_audio_playback_queue, &request, 0) != pdTRUE) {
+        _audio_playback_pending = false;
+        _websocket_playback_accepting = false;
         sendError(requestId, "audio playback queue full");
         return false;
     }
@@ -1662,12 +1801,15 @@ bool AppRemoteAgent::queueWebSocketAudioPlayback(const char* requestId)
 void AppRemoteAgent::queueWebSocketAudioFrame(const uint8_t* data, size_t len)
 {
     if (!_audio_playback_pcm_queue) return;
+    if (!_websocket_playback_accepting) return;
     AudioPcmFrame frame;
     frame.len = std::min(len, sizeof(frame.data));
+    frame.generation = _audio_playback_generation.load();
     if (data && frame.len > 0) {
         memcpy(frame.data, data, frame.len);
     }
-    if (xQueueSend(_audio_playback_pcm_queue, &frame, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    const TickType_t wait_ticks = frame.len == 0 ? pdMS_TO_TICKS(100) : 0;
+    if (xQueueSend(_audio_playback_pcm_queue, &frame, wait_ticks) != pdTRUE) {
         mclog::tagInfo(TAG, "websocket playback queue full; dropped {} bytes", (int)frame.len);
     }
 }
@@ -1680,14 +1822,27 @@ void AppRemoteAgent::audioPlaybackLoop()
             continue;
         }
         _audio_playback_cancel = false;
+        _audio_playback_pending = false;
+        _audio_playback_interrupted_reported = false;
+        _barge_in_enabled = request.bargeIn;
+        _barge_in_reported = false;
+        setCurrentPlaybackId(request.playbackId);
+        bool completed = true;
         if (request.websocket) {
-            playWebSocketAudio();
+            completed = playWebSocketAudio(request);
         } else if (request.url[0]) {
-            playAudioUrl(request.url);
+            completed = playAudioUrl(request.url, request.playbackId);
         }
+        _barge_in_enabled = false;
+        _barge_in_reported = false;
         queueStatus("speaking", "");
-        mclog::tagInfo(TAG, "speechDone sent");
-        sendJson(R"({"type":"event","event":"speechDone"})");
+        if (completed) {
+            mclog::tagInfo(TAG, "speechDone sent");
+            sendPlaybackEvent("speechDone", request.playbackId);
+        } else if (!_audio_playback_interrupted_reported.exchange(true)) {
+            mclog::tagInfo(TAG, "speechInterrupted sent");
+            sendPlaybackEvent("speechInterrupted", request.playbackId);
+        }
     }
     _audio_playback_task = nullptr;
     vTaskDelete(nullptr);
@@ -1745,6 +1900,17 @@ void AppRemoteAgent::audioCaptureLoop()
                 queueStatus("error", "Mic failed; tap or say Stacky");
                 failPendingAudioStart("audio capture start timed out");
             }
+        } else if (_audio_playback_active && _barge_in_enabled && !_barge_in_reported) {
+            if (!input_enabled) {
+                auto audio_codec = Board::GetInstance().GetAudioCodec();
+                if (!audio_codec) {
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    continue;
+                }
+                audio_codec->EnableInput(true);
+                input_enabled = true;
+            }
+            captureBargeInFrame();
         } else {
             if (input_enabled) {
                 auto audio_codec = Board::GetInstance().GetAudioCodec();
@@ -1952,18 +2118,20 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
     return true;
 }
 
-void AppRemoteAgent::playWebSocketAudio()
+bool AppRemoteAgent::playWebSocketAudio(const AudioPlaybackRequest& request)
 {
     mclog::tagInfo(TAG, "websocket playback start");
     logHeap("websocket playback start");
     _audio_playback_active = true;
+    _websocket_playback_accepting = true;
 
     auto audio_codec = Board::GetInstance().GetAudioCodec();
     if (!audio_codec || !_audio_playback_pcm_queue) {
         _audio_playback_active = false;
+        _websocket_playback_accepting = false;
         mclog::tagInfo(TAG, "websocket playback end: audio playback unavailable");
         logHeap("websocket playback end");
-        return;
+        return true;
     }
 
     GetHAL().setSpeakerVolume(static_cast<uint8_t>(_volume.load()), false);
@@ -1978,13 +2146,21 @@ void AppRemoteAgent::playWebSocketAudio()
     uint8_t pending_byte = 0;
     uint32_t playback_started_at = 0;
     size_t playback_samples = 0;
+    bool natural_completion = false;
 
     while (!_audio_playback_cancel && !_tasks_stopping) {
         if (xQueueReceive(_audio_playback_pcm_queue, &frame, pdMS_TO_TICKS(3000)) != pdTRUE) {
             mclog::tagInfo(TAG, "websocket playback timeout waiting for PCM");
             break;
         }
+        if (_audio_playback_cancel) {
+            break;
+        }
+        if (frame.generation != request.generation) {
+            continue;
+        }
         if (frame.len == 0) {
+            natural_completion = true;
             break;
         }
 
@@ -2005,7 +2181,7 @@ void AppRemoteAgent::playWebSocketAudio()
         if (!samples.empty()) {
             if (playback_started_at == 0) {
                 playback_started_at = GetHAL().millis();
-                sendJson(R"({"type":"event","event":"speechStart"})");
+                sendPlaybackEvent("speechStart", request.playbackId);
             }
             playback_samples += samples.size();
             _playback_audio_level = smooth_level_1000(_playback_audio_level.load(), pcm_level_1000(samples));
@@ -2015,15 +2191,24 @@ void AppRemoteAgent::playWebSocketAudio()
         vTaskDelay(1);
     }
 
-    if (playback_started_at > 0) {
+    const bool current_generation = _audio_playback_generation.load() == request.generation;
+    if (current_generation) {
+        _websocket_playback_accepting = false;
+    }
+    if (natural_completion && playback_started_at > 0 && !_audio_playback_cancel) {
         const uint32_t expected_ms = static_cast<uint32_t>(playback_samples / 24);
         const uint32_t elapsed_ms = GetHAL().millis() - playback_started_at;
         if (expected_ms > elapsed_ms) {
-            vTaskDelay(pdMS_TO_TICKS(std::min<uint32_t>(expected_ms - elapsed_ms, 3000)));
+            uint32_t remaining_ms = std::min<uint32_t>(expected_ms - elapsed_ms, 3000);
+            while (remaining_ms > 0 && !_audio_playback_cancel && !_tasks_stopping) {
+                const uint32_t delay_ms = std::min<uint32_t>(remaining_ms, PLAYBACK_DRAIN_CHECK_MS);
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+                remaining_ms -= delay_ms;
+            }
         }
     }
     _playback_audio_level = 0;
-    if (_audio_playback_pcm_queue) {
+    if (current_generation && _audio_playback_pcm_queue) {
         xQueueReset(_audio_playback_pcm_queue);
     }
     mclog::tagInfo(TAG, "EnableOutput(false) start");
@@ -2033,29 +2218,30 @@ void AppRemoteAgent::playWebSocketAudio()
     _audio_playback_active = false;
     mclog::tagInfo(TAG, "websocket playback end");
     logHeap("websocket playback end");
+    return natural_completion && !_audio_playback_cancel && !_tasks_stopping;
 }
 
-void AppRemoteAgent::playAudioUrl(const char* url)
+bool AppRemoteAgent::playAudioUrl(const char* url, const char* playbackId)
 {
     mclog::tagInfo(TAG, "playback start");
     logHeap("playback start");
     _audio_playback_active = true;
     esp_http_client_config_t config = {};
     config.url = url;
-    config.timeout_ms = 10000;
+    config.timeout_ms = 200;
     auto client = esp_http_client_init(&config);
     if (!client) {
         _audio_playback_active = false;
         mclog::tagInfo(TAG, "playback end: http client init failed");
         logHeap("playback end");
-        return;
+        return true;
     }
     if (esp_http_client_open(client, 0) != ESP_OK) {
         esp_http_client_cleanup(client);
         _audio_playback_active = false;
         mclog::tagInfo(TAG, "playback end: http open failed");
         logHeap("playback end");
-        return;
+        return true;
     }
     esp_http_client_fetch_headers(client);
 
@@ -2066,7 +2252,7 @@ void AppRemoteAgent::playAudioUrl(const char* url)
         _audio_playback_active = false;
         mclog::tagInfo(TAG, "playback end: audio codec unavailable");
         logHeap("playback end");
-        return;
+        return true;
     }
 
     GetHAL().setSpeakerVolume(static_cast<uint8_t>(_volume.load()), false);
@@ -2080,9 +2266,17 @@ void AppRemoteAgent::playAudioUrl(const char* url)
     uint8_t pending_byte  = 0;
     uint32_t playback_started_at = 0;
     size_t playback_samples = 0;
+    bool natural_completion = false;
     while (!_audio_playback_cancel && !_tasks_stopping) {
         int read = esp_http_client_read(client, reinterpret_cast<char*>(bytes.data()), bytes.size());
-        if (read <= 0) break;
+        if (read == -ESP_ERR_HTTP_EAGAIN) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+        if (read <= 0) {
+            natural_completion = !_audio_playback_cancel;
+            break;
+        }
         samples.clear();
         size_t offset = 0;
         if (has_pending_byte) {
@@ -2100,7 +2294,7 @@ void AppRemoteAgent::playAudioUrl(const char* url)
         if (!samples.empty()) {
             if (playback_started_at == 0) {
                 playback_started_at = GetHAL().millis();
-                sendJson(R"({"type":"event","event":"speechStart"})");
+                sendPlaybackEvent("speechStart", playbackId);
             }
             playback_samples += samples.size();
             _playback_audio_level = smooth_level_1000(_playback_audio_level.load(), pcm_level_1000(samples));
@@ -2109,12 +2303,16 @@ void AppRemoteAgent::playAudioUrl(const char* url)
         GetHAL().feedTheDog();
         vTaskDelay(1);
     }
-    if (playback_started_at > 0) {
+    if (natural_completion && playback_started_at > 0 && !_audio_playback_cancel) {
         const uint32_t expected_ms = static_cast<uint32_t>(playback_samples / 24);
         const uint32_t elapsed_ms = GetHAL().millis() - playback_started_at;
         if (expected_ms > elapsed_ms) {
-            const uint32_t remaining_ms = expected_ms - elapsed_ms;
-            vTaskDelay(pdMS_TO_TICKS(std::min<uint32_t>(remaining_ms, 3000)));
+            uint32_t remaining_ms = std::min<uint32_t>(expected_ms - elapsed_ms, 3000);
+            while (remaining_ms > 0 && !_audio_playback_cancel && !_tasks_stopping) {
+                const uint32_t delay_ms = std::min<uint32_t>(remaining_ms, PLAYBACK_DRAIN_CHECK_MS);
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+                remaining_ms -= delay_ms;
+            }
         }
     }
     _playback_audio_level = 0;
@@ -2127,6 +2325,7 @@ void AppRemoteAgent::playAudioUrl(const char* url)
     _audio_playback_active = false;
     mclog::tagInfo(TAG, "playback end");
     logHeap("playback end");
+    return natural_completion && !_audio_playback_cancel && !_tasks_stopping;
 }
 
 void AppRemoteAgent::onClose()

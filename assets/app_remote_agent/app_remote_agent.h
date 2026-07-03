@@ -30,6 +30,7 @@ public:
     void onRunning() override;
     void onClose() override;
     void handleTap();
+    void handleHold();
 
 public:
     struct ReceivedMessage {
@@ -39,12 +40,16 @@ public:
 
     struct AudioPlaybackRequest {
         char requestId[64] = {0};
+        char playbackId[64] = {0};
         char url[256]      = {0};
+        uint32_t generation = 0;
         bool websocket     = false;
+        bool bargeIn       = false;
     };
 
     struct AudioPcmFrame {
         size_t len = 0;
+        uint32_t generation = 0;
         uint8_t data[1024] = {0};
     };
 
@@ -116,11 +121,17 @@ private:
     std::atomic_bool _audio_start_pending{false};
     std::atomic_bool _audio_first_input_attempt_logged{false};
     std::atomic_bool _audio_playback_active{false};
+    std::atomic_bool _audio_playback_pending{false};
     std::atomic_bool _audio_playback_cancel{false};
+    std::atomic_bool _audio_playback_interrupted_reported{false};
+    std::atomic_bool _websocket_playback_accepting{false};
+    std::atomic_bool _barge_in_enabled{false};
+    std::atomic_bool _barge_in_reported{false};
     std::atomic_bool _camera_capture_active{false};
     std::atomic_bool _tasks_stopping{false};
     std::atomic<uint32_t> _audio_stream_started_at{0};
     std::atomic<uint32_t> _last_audio_frame_sent_at{0};
+    std::atomic<uint32_t> _audio_playback_generation{0};
     std::atomic_int _volume{90};
     std::atomic_int _mic_audio_level{0};
     std::atomic_int _playback_audio_level{0};
@@ -141,6 +152,7 @@ private:
     char _pending_mode[24]          = {0};
     char _pending_text[160]         = {0};
     char _audio_stream_request_id[64] = {0};
+    char _current_playback_id[64] = {0};
 
     void createUi();
     void startWebSocketServer();
@@ -160,6 +172,8 @@ private:
     bool sendPacket(uint8_t type, const uint8_t* data, size_t len);
     void sendAck(const char* requestId);
     void sendError(const char* requestId, const char* message);
+    void sendPlaybackEvent(const char* event, const char* playbackId = nullptr);
+    void sendBargeInEvent(const char* playbackId = nullptr);
     void logHeap(const char* label);
     bool hasInternalSram(size_t minimum, const char* label);
     void ackPendingAudioStart();
@@ -181,14 +195,19 @@ private:
     void releaseWakeWordDetector();
     void handleWakeWordDetected(const std::string& wake_word);
     bool captureAndSendAudioFrame();
+    bool captureBargeInFrame();
     bool captureAndSendCameraImage(const char* requestId, bool enhance, bool preview);
-    bool queueAudioPlayback(const char* requestId, const char* url);
-    bool queueWebSocketAudioPlayback(const char* requestId);
+    void cancelPlayback(bool emit_event = true);
+    void setCurrentPlaybackId(const char* playbackId);
+    void copyCurrentPlaybackId(char* playbackId, size_t len);
+    uint32_t nextPlaybackGeneration();
+    bool queueAudioPlayback(const char* requestId, const char* playbackId, const char* url, bool bargeIn);
+    bool queueWebSocketAudioPlayback(const char* requestId, const char* playbackId, bool bargeIn);
     void queueWebSocketAudioFrame(const uint8_t* data, size_t len);
     void audioPlaybackLoop();
     void audioCaptureLoop();
-    void playAudioUrl(const char* url);
-    void playWebSocketAudio();
+    bool playAudioUrl(const char* url, const char* playbackId);
+    bool playWebSocketAudio(const AudioPlaybackRequest& request);
     static esp_err_t webSocketHandler(httpd_req_t* req);
     static void webSocketCloseHandler(httpd_handle_t server, int fd);
     static void audioPlaybackTaskEntry(void* arg);

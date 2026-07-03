@@ -13,13 +13,17 @@ Read this when implementing firmware or server messages.
 ## Device To Server JSON
 
 ```json
-{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "render"] }
-{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "audio", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10 }] } }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "playbackControl", "bargeIn", "camera", "volume", "standby", "render"] }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "playbackControl", "bargeIn", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10 }] } }
 { "type": "telemetry", "battery": 82, "charging": true, "wifiRssi": -55, "pose": { "yaw": 0, "pitch": 35 } }
 { "type": "event", "event": "tap", "at": 123456 }
+{ "type": "event", "event": "hold", "at": 123789 }
 { "type": "event", "event": "wakeWord", "wakeWord": "Stacky", "modelId": "stacky", "score": 0.98, "at": 123456 }
 { "type": "event", "event": "cameraImage", "requestId": "img-1", "width": 160, "height": 120, "mediaType": "image/bmp", "bytes": 57654 }
-{ "type": "event", "event": "speechDone" }
+{ "type": "event", "event": "speechStart", "playbackId": "tts-1" }
+{ "type": "event", "event": "speechDone", "playbackId": "tts-1" }
+{ "type": "event", "event": "speechInterrupted", "playbackId": "tts-1" }
+{ "type": "event", "event": "bargeIn", "playbackId": "tts-1", "at": 124000 }
 { "type": "ack", "requestId": "cmd-1", "ok": true }
 { "type": "error", "requestId": "cmd-2", "message": "pitch out of range" }
 ```
@@ -31,15 +35,17 @@ Read this when implementing firmware or server messages.
 { "type": "face", "requestId": "cmd-2", "emotion": "happy" }
 { "type": "look", "requestId": "cmd-3", "yaw": 10, "pitch": 35, "speed": 0.5 }
 { "type": "led", "requestId": "cmd-4", "color": "#33cc99", "pattern": "pulse" }
-{ "type": "speak", "requestId": "cmd-5", "text": "", "audioTransport": "websocket", "sampleRate": 24000 }
+{ "type": "speak", "requestId": "cmd-5", "playbackId": "tts-1", "text": "", "audioTransport": "websocket", "sampleRate": 24000, "bargeIn": false }
 { "type": "startAudio", "requestId": "cmd-6" }
 { "type": "stopAudio", "requestId": "cmd-7" }
 { "type": "standby", "requestId": "cmd-8", "text": "Standby. Say \"Stacky\".", "wakeWord": { "enabled": true, "phrase": "Stacky", "modelId": "stacky" } }
 { "type": "captureImage", "requestId": "img-1", "enhance": false, "preview": true }
 { "type": "captureImage", "requestId": "img-2", "enhance": true, "preview": true }
 { "type": "stop", "requestId": "cmd-9", "target": "all" }
-{ "type": "home", "requestId": "cmd-10" }
-{ "type": "ping", "requestId": "cmd-11", "at": 123456 }
+{ "type": "stop", "requestId": "cmd-10", "target": "playback" }
+{ "type": "playbackClear", "requestId": "cmd-11" }
+{ "type": "home", "requestId": "cmd-12" }
+{ "type": "ping", "requestId": "cmd-13", "at": 123456 }
 ```
 
 ## Command Rules
@@ -51,9 +57,12 @@ Read this when implementing firmware or server messages.
 - Firmware can no-op unsupported commands with `ack` only when that is safer than erroring.
 - `startAudio` means stream microphone PCM to the server for STT. Firmware should acknowledge it only after mic input is enabled and at least one PCM frame has been captured/queued; if startup fails or no frame is produced within about 2 seconds, send `error` for that `requestId` and stop streaming.
 - `standby` means stop full-audio streaming and enter the server-selected idle mode.
+- `stop` with `target: "playback"` stops only current TTS playback, resets queued playback PCM, emits `speechInterrupted` if anything was active or pending, and acknowledges the command. `playbackClear` is equivalent to playback-only stop and does not alter mic/listening/render/avatar state.
 - Firmware must advertise `wakeWord` only when it can run a local detector. If `wakeWord` is absent, the server should use tap-only standby.
 - A local detector sends `wakeWord` when it fires; the server then starts a normal STT conversation with `startAudio`.
-- For normal TTS playback, send `speak` with `audioTransport: "websocket"`, then send PCM chunks as binary packet `0x41`, and finally send `0x42` to end playback.
+- For normal TTS playback, send `speak` with `audioTransport: "websocket"`, then send PCM chunks as binary packet `0x41`, and finally send `0x42` to end playback. Firmware emits `speechStart` on the first output audio chunk, `speechDone` only after natural completion, and `speechInterrupted` on cancellation/interruption. If `speak.playbackId` is present, firmware includes it in these lifecycle events.
+- Tap and hold gestures remain live during playback. A tap or long press during playback interrupts locally for low latency and still sends the corresponding `tap` or `hold` event.
+- `speak.bargeIn: true` enables lightweight mic level detection during playback. Firmware may emit `bargeIn` with `at` and `playbackId`; it does not stream full mic PCM during playback.
 
 ## Enums And Limits
 
