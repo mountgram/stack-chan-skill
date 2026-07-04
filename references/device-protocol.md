@@ -13,8 +13,8 @@ Read this when implementing firmware or server messages.
 ## Device To Server JSON
 
 ```json
-{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "playbackControl", "bargeIn", "camera", "volume", "standby", "render"] }
-{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "playbackControl", "bargeIn", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10 }] } }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "fullDuplexAudio", "playbackControl", "bargeIn", "camera", "volume", "standby", "render"] }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "fullDuplexAudio", "playbackControl", "bargeIn", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10 }] } }
 { "type": "telemetry", "battery": 82, "charging": true, "wifiRssi": -55, "pose": { "yaw": 0, "pitch": 35 } }
 { "type": "event", "event": "tap", "at": 123456 }
 { "type": "event", "event": "hold", "at": 123789 }
@@ -55,14 +55,15 @@ Read this when implementing firmware or server messages.
 - Firmware should reject malformed JSON with an error, not crash.
 - Server clamps values before sending; firmware clamps again before touching hardware.
 - Firmware can no-op unsupported commands with `ack` only when that is safer than erroring.
-- `startAudio` means stream microphone PCM to the server for STT. Firmware should acknowledge it only after mic input is enabled and at least one PCM frame has been captured/queued; if startup fails or no frame is produced within about 2 seconds, send `error` for that `requestId` and stop streaming.
-- `standby` means stop full-audio streaming and enter the server-selected idle mode.
+- Devices that advertise `fullDuplexAudio` start sending microphone PCM automatically after WebSocket connect/hello. The server owns listening/speaking policy and should treat upstream mic packets as continuous input.
+- On `fullDuplexAudio` devices, `startAudio` and `stopAudio` are compatibility hints. `startAudio` is acknowledged if the mic tasks are alive; `stopAudio` is acknowledged as a no-op by default and does not stop upstream PCM.
+- `standby` updates display/wake-word/UI state only; it does not stop upstream mic PCM.
 - `stop` with `target: "playback"` stops only current TTS playback, resets queued playback PCM, emits `speechInterrupted` if anything was active or pending, and acknowledges the command. `playbackClear` is equivalent to playback-only stop and does not alter mic/listening/render/avatar state.
 - Firmware must advertise `wakeWord` only when it can run a local detector. If `wakeWord` is absent, the server should use tap-only standby.
 - A local detector sends `wakeWord` when it fires; the server then starts a normal STT conversation with `startAudio`.
-- For normal TTS playback, send `speak` with `audioTransport: "websocket"`, then send PCM chunks as binary packet `0x41`, and finally send `0x42` to end playback. Firmware emits `speechStart` on the first output audio chunk, `speechDone` only after natural completion, and `speechInterrupted` on cancellation/interruption. If `speak.playbackId` is present, firmware includes it in these lifecycle events.
+- For normal TTS playback, send `speak` with `audioTransport: "websocket"`, then send PCM chunks as binary packet `0x41`, and finally send `0x42` to end playback. Firmware keeps mic capture running during playback, emits `speechStart` on the first output audio chunk, `speechDone` only after natural completion, and `speechInterrupted` on cancellation/interruption. If `speak.playbackId` is present, firmware includes it in these lifecycle events.
 - Tap and hold gestures remain live during playback. A tap or long press during playback interrupts locally for low latency and still sends the corresponding `tap` or `hold` event.
-- `speak.bargeIn: true` enables lightweight mic level detection during playback. Firmware may emit `bargeIn` with `at` and `playbackId`; it does not stream full mic PCM during playback.
+- `speak.bargeIn: true` enables a local mic-level `bargeIn` event during playback. Full mic PCM still streams continuously on `fullDuplexAudio` devices.
 
 ## Enums And Limits
 
@@ -87,7 +88,7 @@ bytes 5..: payload
 
 | Type | Direction | Payload |
 |---|---|---|
-| `0x31` | device to server | 16-bit little-endian mono PCM audio chunk. |
+| `0x31` | device to server | 24 kHz 16-bit little-endian mono PCM audio chunk. `fullDuplexAudio` devices send these continuously while connected. |
 | `0x41` | server to device | 24 kHz 16-bit little-endian mono PCM playback chunk. |
 | `0x42` | server to device | End of WebSocket playback stream. Payload length should be `0`. |
 | raw binary after `cameraImage` event | device to server | Image bytes described by the immediately preceding `cameraImage` JSON event. |
@@ -127,12 +128,12 @@ The default desired phrase is `Stacky`. A custom phrase requires a matching micr
 
 ## Audio Startup Semantics
 
-Treat `startAudio` ack as "mic is actually streaming," not merely "command accepted." The robust sequence is:
+For devices advertising `fullDuplexAudio`, microphone capture is connection-scoped, not command-scoped:
 
-1. Server sends `{ "type": "startAudio", "requestId": "cmd-123" }`.
-2. Firmware disarms wake-word detection and requests capture startup.
-3. Capture task enables codec input and attempts `InputData(...)`.
-4. Firmware sends `{ "type": "ack", "requestId": "cmd-123", "ok": true }` only after the first PCM frame is captured or queued.
-5. If no PCM frame is produced within about 2 seconds, firmware disables input, stops streaming, and sends `{ "type": "error", "requestId": "cmd-123", "message": "audio capture start timed out" }`.
+1. Server connects to `/stacky/device`.
+2. Firmware sends `hello` and enables codec input from its capture task.
+3. Firmware begins sending `0x31` PCM without waiting for `startAudio`.
+4. `startAudio` is a compatibility ack/hint, not the transition that starts capture.
+5. `standby`, `speak`, playback, and `stopAudio` do not stop `0x31` packets.
 
-This distinguishes command acceptance from a healthy audio pipeline, especially after `speechDone` when the server immediately starts the next listening turn.
+Servers should use `hello.capabilities` to detect `fullDuplexAudio`. Older firmware without that capability may still require the legacy `startAudio`/`stopAudio` turn-taking sequence.

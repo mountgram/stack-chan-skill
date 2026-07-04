@@ -78,7 +78,7 @@ Do not commit private LAN IPs to reusable files. Put the StackChan URL in the br
 - host the device WebSocket and know when the brain is connected
 - send `hello`, telemetry, tap events, audio frames, and camera frames
 - receive screen, face, look, led, speak, startAudio, stopAudio, captureImage, stop, home, and ping commands
-- receive standby commands; if wake-word support is present, arm the server-selected local detector only in standby
+- receive standby commands as server-owned UI/listening policy hints without stopping the continuous mic stream
 - receive `render.defineScene`, `render.setScene`, `render.reset`, and play `render.animate` keyframes for server-driven avatar rendering
 - clamp pitch to `5..85` and yaw to `-128..128`
 - rate-limit motion commands
@@ -87,7 +87,7 @@ Do not commit private LAN IPs to reusable files. Put the StackChan URL in the br
 
 ## Wake-Word Integration Point
 
-Keep wake-word detection out of the always-streaming STT path. `startAudio` streams microphone PCM to the server; `standby` stops that stream and may arm a local microWakeWord detector if the server requested one.
+Keep wake-word detection out of the continuous full-duplex STT path. Firmware starts microphone PCM streaming when the WebSocket connects; `startAudio`/`stopAudio` are compatibility hints, and `standby` updates UI/policy state without stopping mic PCM.
 
 Firmware must not advertise `wakeWord` until it can actually run the detector. Once integrated, include `wakeWord` in `hello.capabilities`, provide model metadata in `hello.wakeWord.models`, and emit:
 

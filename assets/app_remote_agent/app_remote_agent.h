@@ -105,8 +105,10 @@ private:
     std::queue<ReceivedMessage> _messages;
     QueueHandle_t _audio_playback_queue = nullptr;
     QueueHandle_t _audio_playback_pcm_queue = nullptr;
+    QueueHandle_t _audio_capture_pcm_queue = nullptr;
     TaskHandle_t _audio_playback_task   = nullptr;
     TaskHandle_t _audio_capture_task    = nullptr;
+    TaskHandle_t _audio_capture_send_task = nullptr;
     lv_obj_t* _root         = nullptr;
     lv_obj_t* _status_dot   = nullptr;
     lv_obj_t* _main_label   = nullptr;
@@ -132,6 +134,8 @@ private:
     std::atomic<uint32_t> _audio_stream_started_at{0};
     std::atomic<uint32_t> _last_audio_frame_sent_at{0};
     std::atomic<uint32_t> _audio_playback_generation{0};
+    std::atomic<uint32_t> _last_playback_queue_full_log_at{0};
+    std::atomic<uint32_t> _playback_queue_overflows{0};
     std::atomic_int _volume{90};
     std::atomic_int _mic_audio_level{0};
     std::atomic_int _playback_audio_level{0};
@@ -170,6 +174,7 @@ private:
     void sendHello();
     void sendTelemetry();
     bool sendPacket(uint8_t type, const uint8_t* data, size_t len);
+    bool sendPacketIfSendIdle(uint8_t type, const uint8_t* data, size_t len);
     void sendAck(const char* requestId);
     void sendError(const char* requestId, const char* message);
     void sendPlaybackEvent(const char* event, const char* playbackId = nullptr);
@@ -195,7 +200,6 @@ private:
     void releaseWakeWordDetector();
     void handleWakeWordDetected(const std::string& wake_word);
     bool captureAndSendAudioFrame();
-    bool captureBargeInFrame();
     bool captureAndSendCameraImage(const char* requestId, bool enhance, bool preview);
     void cancelPlayback(bool emit_event = true);
     void setCurrentPlaybackId(const char* playbackId);
@@ -206,10 +210,12 @@ private:
     void queueWebSocketAudioFrame(const uint8_t* data, size_t len);
     void audioPlaybackLoop();
     void audioCaptureLoop();
+    void audioCaptureSendLoop();
     bool playAudioUrl(const char* url, const char* playbackId);
     bool playWebSocketAudio(const AudioPlaybackRequest& request);
     static esp_err_t webSocketHandler(httpd_req_t* req);
     static void webSocketCloseHandler(httpd_handle_t server, int fd);
     static void audioPlaybackTaskEntry(void* arg);
     static void audioCaptureTaskEntry(void* arg);
+    static void audioCaptureSendTaskEntry(void* arg);
 };
