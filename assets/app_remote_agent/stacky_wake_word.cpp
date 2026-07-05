@@ -53,6 +53,7 @@ public:
 
         _input_sample_rate = audio_codec->input_sample_rate() > 0 ? audio_codec->input_sample_rate() : MODEL_SAMPLE_RATE;
         _input_channels    = std::max(audio_codec->input_channels(), 1);
+        _input_chunk.reserve(static_cast<size_t>(_input_sample_rate * FEATURE_STEP_MS / 1000 + 2) * _input_channels);
         audio_codec->EnableInput(true);
         state_ = esphome::microphone::STATE_RUNNING;
         ESP_LOGI(TAG, "wake-word microphone started at %d Hz, %d channel(s)", _input_sample_rate, _input_channels);
@@ -84,9 +85,6 @@ public:
         if (output_samples == 0) {
             return 0;
         }
-
-        _input_sample_rate = audio_codec->input_sample_rate() > 0 ? audio_codec->input_sample_rate() : MODEL_SAMPLE_RATE;
-        _input_channels    = std::max(audio_codec->input_channels(), 1);
 
         if (_input_sample_rate == MODEL_SAMPLE_RATE) {
             _input_chunk.resize(output_samples * _input_channels);
@@ -139,7 +137,7 @@ struct StackyWakeWordDetector::Impl {
     StackyAudioCodecMicrophone microphone;
     esphome::micro_wake_word::MicroWakeWord wake_word;
     StackyWakeWordDetector::Callback callback;
-    TaskHandle_t task = nullptr;
+    std::atomic<TaskHandle_t> task{nullptr};
     float cutoff = STACKY_CUTOFF;
     size_t sliding_window = STACKY_SLIDING_WINDOW;
     std::atomic_bool setup{false};
@@ -160,7 +158,10 @@ struct StackyWakeWordDetector::Impl {
         wake_word.add_wake_word_model(stacky_wake_word_tflite, cutoff, sliding_window, "Stacky",
                                       STACKY_TENSOR_ARENA);
         wake_word.add_detection_callback([this](std::string wake_word_name) {
-            armed = false;
+            if (!armed.exchange(false)) {
+                return;
+            }
+            wake_word.stop();
             if (callback) {
                 callback(wake_word_name);
             }
@@ -172,14 +173,15 @@ struct StackyWakeWordDetector::Impl {
         }
 
         task_running = true;
-        BaseType_t created = xTaskCreate(taskEntry, "stacky_wake_word", 12288, this, 2, &task);
+        TaskHandle_t task_handle = nullptr;
+        BaseType_t created = xTaskCreatePinnedToCore(taskEntry, "stacky_wake_word", 12288, this, 2, &task_handle, 1);
         if (created != pdPASS) {
             task_running = false;
-            task         = nullptr;
+            task.store(nullptr);
             ESP_LOGE(TAG, "failed to create wake-word task");
             return false;
         }
-
+        task.store(task_handle);
         setup = true;
         return true;
     }
@@ -210,7 +212,7 @@ struct StackyWakeWordDetector::Impl {
             return;
         }
         wake_word.stop();
-        if (xTaskGetCurrentTaskHandle() == task) {
+        if (xTaskGetCurrentTaskHandle() == task.load()) {
             return;
         }
         const uint32_t started = xTaskGetTickCount();
@@ -224,14 +226,18 @@ struct StackyWakeWordDetector::Impl {
     {
         disarm(500);
         task_running = false;
-        if (xTaskGetCurrentTaskHandle() == task) {
+        if (xTaskGetCurrentTaskHandle() == task.load()) {
             return;
         }
         const uint32_t started = xTaskGetTickCount();
-        while (task && xTaskGetTickCount() - started < pdMS_TO_TICKS(500)) {
+        while (task.load() && xTaskGetTickCount() - started < pdMS_TO_TICKS(500)) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
-        setup = false;
+        if (task.load()) {
+            ESP_LOGE(TAG, "wake-word task did not exit in time");
+        } else {
+            setup = false;
+        }
     }
 
     static void taskEntry(void* arg)
@@ -248,7 +254,7 @@ struct StackyWakeWordDetector::Impl {
             }
             vTaskDelay(pdMS_TO_TICKS(running ? 10 : 50));
         }
-        task = nullptr;
+        task.store(nullptr);
         vTaskDelete(nullptr);
     }
 };

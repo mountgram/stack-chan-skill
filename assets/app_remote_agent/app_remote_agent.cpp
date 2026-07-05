@@ -63,8 +63,9 @@ static constexpr uint8_t PACKET_AUDIO_MIC_PCM = 0x31;
 static constexpr uint8_t PACKET_AUDIO_PLAYBACK_PCM = 0x41;
 static constexpr uint8_t PACKET_AUDIO_PLAYBACK_END = 0x42;
 static constexpr size_t MIC_PCM_QUEUE_DEPTH = 4;
-static constexpr size_t PLAYBACK_PCM_QUEUE_DEPTH = 32;
-static constexpr UBaseType_t PLAYBACK_PREBUFFER_FRAMES = 4;
+static constexpr size_t PLAYBACK_RING_BUFFER_BYTES = 24 * 1024;
+static constexpr size_t PLAYBACK_PREBUFFER_BYTES = 4 * 1024;
+static constexpr size_t PLAYBACK_READ_BYTES = 2048;
 static constexpr uint32_t PLAYBACK_PREBUFFER_TIMEOUT_MS = 250;
 static constexpr uint32_t PLAYBACK_QUEUE_FULL_LOG_INTERVAL_MS = 1000;
 static constexpr size_t MIN_INTERNAL_SRAM_SPEAK = 8192;
@@ -234,12 +235,11 @@ static void auto_level_grey(std::vector<uint8_t>& frame)
 static avatar::Emotion parse_emotion(const char* emotion)
 {
     if (!emotion) return avatar::Emotion::Neutral;
-    std::string value(emotion);
-    if (value == "happy") return avatar::Emotion::Happy;
-    if (value == "angry") return avatar::Emotion::Angry;
-    if (value == "sad") return avatar::Emotion::Sad;
-    if (value == "doubt" || value == "thinking" || value == "curious" || value == "surprised") return avatar::Emotion::Doubt;
-    if (value == "sleepy" || value == "asleep") return avatar::Emotion::Sleepy;
+    if (strcmp(emotion, "happy") == 0) return avatar::Emotion::Happy;
+    if (strcmp(emotion, "angry") == 0) return avatar::Emotion::Angry;
+    if (strcmp(emotion, "sad") == 0) return avatar::Emotion::Sad;
+    if (strcmp(emotion, "doubt") == 0 || strcmp(emotion, "thinking") == 0 || strcmp(emotion, "curious") == 0 || strcmp(emotion, "surprised") == 0) return avatar::Emotion::Doubt;
+    if (strcmp(emotion, "sleepy") == 0 || strcmp(emotion, "asleep") == 0) return avatar::Emotion::Sleepy;
     return avatar::Emotion::Neutral;
 }
 
@@ -366,6 +366,8 @@ void AppRemoteAgent::startWebSocketServer()
     config.send_wait_timeout = 1;
     config.close_fn = AppRemoteAgent::webSocketCloseHandler;
 
+    _ws_recv_buf.reserve(4096);
+
     esp_err_t err = httpd_start(&_websocket_server, &config);
     if (err != ESP_OK) {
         _websocket_server = nullptr;
@@ -396,10 +398,10 @@ void AppRemoteAgent::startWebSocketServer()
 
 void AppRemoteAgent::stopWebSocketServer()
 {
+    _connected = false;
     httpd_handle_t server = _websocket_server;
     _websocket_server = nullptr;
-    _websocket_fd = -1;
-    _connected = false;
+    _websocket_fd.store(-1);
     _hello_pending = false;
     if (s_websocket_app == this) s_websocket_app = nullptr;
     if (server) {
@@ -409,12 +411,13 @@ void AppRemoteAgent::stopWebSocketServer()
 
 void AppRemoteAgent::handleWebSocketConnected(int fd)
 {
-    if (_websocket_fd >= 0 && _websocket_fd != fd && _websocket_server) {
-        httpd_sess_trigger_close(_websocket_server, _websocket_fd);
+    if (_websocket_fd.load() >= 0 && _websocket_fd.load() != fd && _websocket_server) {
+        httpd_sess_trigger_close(_websocket_server, _websocket_fd.load());
     }
     _connected = false;
     _hello_pending = false;
-    _websocket_fd = fd;
+    _standby = false;
+    _websocket_fd.store(fd);
     _audio_streaming = true;
     cancelPlayback(false);
     failPendingAudioStart("new brain connection opened");
@@ -424,6 +427,7 @@ void AppRemoteAgent::handleWebSocketConnected(int fd)
     _last_audio_frame_sent_at = 0;
     _audio_input_failures = 0;
     _audio_first_input_attempt_logged = false;
+    _audio_first_input_success_logged = false;
     if (_audio_capture_pcm_queue) {
         xQueueReset(_audio_capture_pcm_queue);
     }
@@ -434,10 +438,11 @@ void AppRemoteAgent::handleWebSocketConnected(int fd)
 
 void AppRemoteAgent::handleWebSocketDisconnected(int fd)
 {
-    if (_websocket_fd != fd) return;
-    _websocket_fd = -1;
+    if (_websocket_fd.load() != fd) return;
+    _websocket_fd.store(-1);
     _connected = false;
     _hello_pending = false;
+    _standby = false;
     _audio_streaming = false;
     cancelPlayback(false);
     failPendingAudioStart("connection closed before audio capture started");
@@ -468,8 +473,8 @@ esp_err_t AppRemoteAgent::handleWebSocketFrame(httpd_req_t* req)
         return ESP_OK;
     }
 
-    std::vector<uint8_t> payload(frame.len + 1);
-    frame.payload = payload.data();
+    _ws_recv_buf.resize(frame.len + 1);
+    frame.payload = _ws_recv_buf.data();
     err = httpd_ws_recv_frame(req, &frame, frame.len);
     if (err != ESP_OK) {
         handleWebSocketDisconnected(fd);
@@ -478,15 +483,15 @@ esp_err_t AppRemoteAgent::handleWebSocketFrame(httpd_req_t* req)
 
     if (frame.type == HTTPD_WS_TYPE_TEXT) {
         std::lock_guard<std::mutex> lock(_mutex);
-        _messages.push({false, std::string(reinterpret_cast<char*>(payload.data()), frame.len)});
+        _messages.push({false, std::string(reinterpret_cast<char*>(_ws_recv_buf.data()), frame.len)});
     } else if (frame.type == HTTPD_WS_TYPE_BINARY && frame.len >= 5) {
-        const uint8_t packet_type = payload[0];
-        const size_t packet_len = (static_cast<size_t>(payload[1]) << 24) |
-                                  (static_cast<size_t>(payload[2]) << 16) |
-                                  (static_cast<size_t>(payload[3]) << 8) |
-                                  static_cast<size_t>(payload[4]);
+        const uint8_t packet_type = _ws_recv_buf[0];
+        const size_t packet_len = (static_cast<size_t>(_ws_recv_buf[1]) << 24) |
+                                  (static_cast<size_t>(_ws_recv_buf[2]) << 16) |
+                                  (static_cast<size_t>(_ws_recv_buf[3]) << 8) |
+                                  static_cast<size_t>(_ws_recv_buf[4]);
         if (packet_type == PACKET_AUDIO_PLAYBACK_PCM && packet_len <= frame.len - 5) {
-            queueWebSocketAudioFrame(payload.data() + 5, packet_len);
+            queueWebSocketAudioFrame(_ws_recv_buf.data() + 5, packet_len);
         } else if (packet_type == PACKET_AUDIO_PLAYBACK_END) {
             queueWebSocketAudioFrame(nullptr, 0);
         }
@@ -513,6 +518,29 @@ void AppRemoteAgent::webSocketCloseHandler(httpd_handle_t server, int fd)
     ::close(fd);
 }
 
+struct CameraTaskParams {
+    AppRemoteAgent* app;
+    char requestId[64];
+    bool enhance;
+    bool preview;
+};
+
+void AppRemoteAgent::cameraTaskEntry(void* arg)
+{
+    auto* params = static_cast<CameraTaskParams*>(arg);
+    AppRemoteAgent* app = params->app;
+    char requestId[64];
+    strncpy(requestId, params->requestId, sizeof(requestId) - 1);
+    requestId[sizeof(requestId) - 1] = 0;
+    const bool enhance = params->enhance;
+    const bool preview = params->preview;
+    delete params;
+    if (app->captureAndSendCameraImage(requestId, enhance, preview)) {
+        app->sendAck(requestId);
+    }
+    vTaskDelete(nullptr);
+}
+
 void AppRemoteAgent::onRunning()
 {
     if (!_opened) return;
@@ -525,11 +553,15 @@ void AppRemoteAgent::onRunning()
         }
         processMessages();
         updateRenderAnimation();
-        if (GetHAL().millis() - _last_telemetry_at > 3000) {
+        if (GetHAL().millis() - _last_telemetry_at > (_standby ? 30000u : 3000u)) {
             sendTelemetry();
         }
     } else if (!_websocket_server) {
         startWebSocketServer();
+    }
+
+    if (!_tasks_stopping && (!_audio_playback_task.load() || !_audio_capture_task.load() || !_audio_capture_send_task.load())) {
+        startAudioTasks();
     }
 
     {
@@ -545,20 +577,30 @@ void AppRemoteAgent::startAudioTasks()
     if (!_audio_playback_queue) {
         _audio_playback_queue = xQueueCreate(2, sizeof(AudioPlaybackRequest));
     }
-    if (!_audio_playback_pcm_queue) {
-        _audio_playback_pcm_queue = xQueueCreate(PLAYBACK_PCM_QUEUE_DEPTH, sizeof(AudioPcmFrame));
+    if (!_audio_playback_ringbuf) {
+        _audio_playback_ringbuf = xRingbufferCreateWithCaps(PLAYBACK_RING_BUFFER_BYTES, RINGBUF_TYPE_BYTEBUF, MALLOC_CAP_SPIRAM);
+        _audio_playback_ringbuf_in_psram = (_audio_playback_ringbuf != nullptr);
+        if (!_audio_playback_ringbuf) {
+            _audio_playback_ringbuf = xRingbufferCreate(PLAYBACK_RING_BUFFER_BYTES, RINGBUF_TYPE_BYTEBUF);
+        }
     }
     if (!_audio_capture_pcm_queue) {
         _audio_capture_pcm_queue = xQueueCreate(MIC_PCM_QUEUE_DEPTH, sizeof(AudioPcmFrame));
     }
-    if (!_audio_playback_task) {
-        xTaskCreate(audioPlaybackTaskEntry, "stacky_audio_out", 8192, this, 3, &_audio_playback_task);
+    if (!_audio_playback_task.load()) {
+        TaskHandle_t handle = nullptr;
+        xTaskCreatePinnedToCore(audioPlaybackTaskEntry, "stacky_audio_out", 8192, this, 3, &handle, 1);
+        _audio_playback_task.store(handle);
     }
-    if (!_audio_capture_task) {
-        xTaskCreate(audioCaptureTaskEntry, "stacky_audio_in", 8192, this, 3, &_audio_capture_task);
+    if (!_audio_capture_task.load()) {
+        TaskHandle_t handle = nullptr;
+        xTaskCreatePinnedToCore(audioCaptureTaskEntry, "stacky_audio_in", 8192, this, 3, &handle, 1);
+        _audio_capture_task.store(handle);
     }
-    if (!_audio_capture_send_task) {
-        xTaskCreate(audioCaptureSendTaskEntry, "stacky_mic_send", 6144, this, 2, &_audio_capture_send_task);
+    if (!_audio_capture_send_task.load()) {
+        TaskHandle_t handle = nullptr;
+        xTaskCreatePinnedToCore(audioCaptureSendTaskEntry, "stacky_mic_send", 6144, this, 2, &handle, 1);
+        _audio_capture_send_task.store(handle);
     }
 }
 
@@ -569,32 +611,44 @@ void AppRemoteAgent::stopAudioTasks()
     _audio_start_pending = false;
     cancelPlayback(false);
     const uint32_t started = xTaskGetTickCount();
-    while ((_audio_playback_task || _audio_capture_task || _audio_capture_send_task) && xTaskGetTickCount() - started < pdMS_TO_TICKS(1500)) {
+    while ((_audio_playback_task.load() || _audio_capture_task.load() || _audio_capture_send_task.load()) && xTaskGetTickCount() - started < pdMS_TO_TICKS(4000)) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    if (_audio_playback_task) {
-        mclog::tagInfo(TAG, "force deleting audio playback task");
-        vTaskDelete(_audio_playback_task);
-        _audio_playback_task = nullptr;
+    bool force_deleted = false;
+    if (_audio_playback_task.load()) {
+        mclog::tagInfo(TAG, "force deleting audio playback task; send mutex may deadlock");
+        vTaskDelete(_audio_playback_task.load());
+        _audio_playback_task.store(nullptr);
+        force_deleted = true;
     }
-    if (_audio_capture_task) {
-        mclog::tagInfo(TAG, "force deleting audio capture task");
-        vTaskDelete(_audio_capture_task);
-        _audio_capture_task = nullptr;
+    if (_audio_capture_task.load()) {
+        mclog::tagInfo(TAG, "force deleting audio capture task; send mutex may deadlock");
+        vTaskDelete(_audio_capture_task.load());
+        _audio_capture_task.store(nullptr);
+        force_deleted = true;
     }
-    if (_audio_capture_send_task) {
-        mclog::tagInfo(TAG, "force deleting mic send task");
-        vTaskDelete(_audio_capture_send_task);
-        _audio_capture_send_task = nullptr;
+    if (_audio_capture_send_task.load()) {
+        mclog::tagInfo(TAG, "force deleting mic send task; send mutex may deadlock");
+        vTaskDelete(_audio_capture_send_task.load());
+        _audio_capture_send_task.store(nullptr);
+        force_deleted = true;
+    }
+    if (force_deleted) {
+        _send_mutex.~mutex();
+        new (&_send_mutex) std::mutex();
     }
     if (_audio_playback_queue) {
         vQueueDelete(_audio_playback_queue);
         _audio_playback_queue = nullptr;
     }
-    if (_audio_playback_pcm_queue) {
-        vQueueDelete(_audio_playback_pcm_queue);
-        _audio_playback_pcm_queue = nullptr;
+    if (_audio_playback_ringbuf) {
+        if (_audio_playback_ringbuf_in_psram) {
+            vRingbufferDeleteWithCaps(_audio_playback_ringbuf);
+        } else {
+            vRingbufferDelete(_audio_playback_ringbuf);
+        }
+        _audio_playback_ringbuf = nullptr;
     }
     if (_audio_capture_pcm_queue) {
         vQueueDelete(_audio_capture_pcm_queue);
@@ -611,8 +665,8 @@ void AppRemoteAgent::applyPendingStatus()
         if (!_pending_status_dirty) {
             return;
         }
-        strncpy(mode, _pending_mode, sizeof(mode) - 1);
-        strncpy(text, _pending_text, sizeof(text) - 1);
+        snprintf(mode, sizeof(mode), "%s", _pending_mode);
+        snprintf(text, sizeof(text), "%s", _pending_text);
         _pending_status_dirty = false;
     }
     setStatus(mode, text);
@@ -654,7 +708,7 @@ void AppRemoteAgent::ackPendingAudioStart()
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (!_audio_start_pending) return;
-        strncpy(requestId, _audio_stream_request_id, sizeof(requestId) - 1);
+        snprintf(requestId, sizeof(requestId), "%s", _audio_stream_request_id);
         _audio_start_pending = false;
     }
     mclog::tagInfo(TAG, "audio capture ready requestId={}", requestId);
@@ -668,7 +722,7 @@ void AppRemoteAgent::failPendingAudioStart(const char* message)
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_audio_start_pending) {
-            strncpy(requestId, _audio_stream_request_id, sizeof(requestId) - 1);
+            snprintf(requestId, sizeof(requestId), "%s", _audio_stream_request_id);
             _audio_stream_request_id[0] = 0;
             _audio_start_pending = false;
             should_send = true;
@@ -693,6 +747,7 @@ void AppRemoteAgent::resetAudioStartState(const char* requestId)
     _last_audio_frame_sent_at = 0;
     _audio_input_failures = 0;
     _audio_first_input_attempt_logged = false;
+    _audio_first_input_success_logged = false;
 }
 
 void AppRemoteAgent::handleMessage(const std::string& data)
@@ -797,8 +852,9 @@ void AppRemoteAgent::handleMessage(const std::string& data)
 
     if (strcmp(type, "startAudio") == 0) {
         mclog::tagInfo(TAG, "received startAudio requestId={}", requestId);
+        _standby = false;
         _audio_streaming = true;
-        if (_audio_capture_task && _audio_capture_send_task) {
+        if (_audio_capture_task.load() && _audio_capture_send_task.load()) {
             sendAck(requestId);
         } else {
             sendError(requestId, "audio capture task unavailable");
@@ -807,6 +863,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "standby") == 0) {
+        _standby = true;
         const char* text = doc["text"] | "Standby. Tap to talk.";
         clearRenderScene();
         if (doc["wakeWord"].is<ArduinoJson::JsonObject>()) {
@@ -827,10 +884,27 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     }
 
     if (strcmp(type, "captureImage") == 0) {
-        if (!captureAndSendCameraImage(requestId, doc["enhance"] | false, doc["preview"] | false)) {
+        if (_camera_capture_active.exchange(true)) {
+            sendError(requestId, "camera busy");
             return;
         }
-        sendAck(requestId);
+        auto* params = new (std::nothrow) CameraTaskParams{};
+        if (!params) {
+            _camera_capture_active = false;
+            sendError(requestId, "camera task alloc failed");
+            return;
+        }
+        params->app = this;
+        strncpy(params->requestId, requestId, sizeof(params->requestId) - 1);
+        params->requestId[sizeof(params->requestId) - 1] = 0;
+        params->enhance = doc["enhance"] | false;
+        params->preview = doc["preview"] | false;
+        if (xTaskCreatePinnedToCore(cameraTaskEntry, "stacky_camera", 6144, params, 1, nullptr, 1) != pdPASS) {
+            _camera_capture_active = false;
+            delete params;
+            sendError(requestId, "camera task failed");
+            return;
+        }
         return;
     }
 
@@ -1019,7 +1093,7 @@ void AppRemoteAgent::sendJson(const std::string& data)
 
 bool AppRemoteAgent::sendWebSocketFrame(const uint8_t* data, size_t len, bool binary)
 {
-    if (!_websocket_server || _websocket_fd < 0 || !_connected) {
+    if (!_websocket_server || _websocket_fd.load() < 0 || !_connected) {
         return false;
     }
 
@@ -1028,10 +1102,10 @@ bool AppRemoteAgent::sendWebSocketFrame(const uint8_t* data, size_t len, bool bi
     frame.payload = const_cast<uint8_t*>(data);
     frame.len = len;
 
-    esp_err_t err = httpd_ws_send_data(_websocket_server, _websocket_fd, &frame);
+    esp_err_t err = httpd_ws_send_data(_websocket_server, _websocket_fd.load(), &frame);
     if (err != ESP_OK) {
         mclog::tagInfo(TAG, "websocket send failed: {}", (int)err);
-        _websocket_fd = -1;
+        _websocket_fd.store(-1);
         _connected = false;
         _hello_pending = false;
         _audio_streaming = false;
@@ -1050,6 +1124,18 @@ bool AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
     std::lock_guard<std::mutex> lock(_send_mutex);
     if (!_connected) {
         return false;
+    }
+    if (len <= 256) {
+        std::array<uint8_t, 5 + 256> packet{};
+        packet[0] = type;
+        packet[1] = (len >> 24) & 0xff;
+        packet[2] = (len >> 16) & 0xff;
+        packet[3] = (len >> 8) & 0xff;
+        packet[4] = len & 0xff;
+        if (data && len > 0) {
+            memcpy(packet.data() + 5, data, len);
+        }
+        return sendWebSocketFrame(packet.data(), 5 + len, true);
     }
     std::vector<uint8_t> packet;
     packet.reserve(5 + len);
@@ -1070,6 +1156,7 @@ bool AppRemoteAgent::sendPacketIfSendIdle(uint8_t type, const uint8_t* data, siz
         return false;
     }
     if (!_send_mutex.try_lock()) {
+        _mic_frames_dropped.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     std::unique_lock<std::mutex> lock(_send_mutex, std::adopt_lock);
@@ -1108,10 +1195,11 @@ void AppRemoteAgent::sendHello()
 void AppRemoteAgent::sendTelemetry()
 {
     _last_telemetry_at = GetHAL().millis();
-    char buffer[224];
+    char buffer[256];
     snprintf(buffer, sizeof(buffer),
-             R"({"type":"telemetry","battery":%d,"charging":%s,"wifiRssi":0,"pose":{"yaw":%d,"pitch":%d},"volume":%d})",
-             (int)GetHAL().getBatteryLevel(), GetHAL().isBatteryCharging() ? "true" : "false", _yaw, _pitch, _volume.load());
+             R"({"type":"telemetry","battery":%d,"charging":%s,"wifiRssi":0,"pose":{"yaw":%d,"pitch":%d},"volume":%d,"micDropped":%u})",
+             (int)GetHAL().getBatteryLevel(), GetHAL().isBatteryCharging() ? "true" : "false", _yaw, _pitch, _volume.load(),
+             (unsigned)_mic_frames_dropped.load(std::memory_order_relaxed));
     sendJson(buffer);
 }
 
@@ -1649,7 +1737,7 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
         vTaskDelay(pdMS_TO_TICKS(5));
         return false;
     }
-    if (_last_audio_frame_sent_at.load() == 0) {
+    if (!_audio_first_input_success_logged.exchange(true)) {
         mclog::tagInfo(TAG, "first successful InputData");
     }
     if (chunk_frames * 2 > sizeof(AudioPcmFrame::data)) {
@@ -1658,11 +1746,18 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
     AudioPcmFrame frame;
     frame.len = chunk_frames * 2;
     uint64_t total = 0;
-    for (size_t i = 0; i < chunk_frames; ++i) {
-        int16_t sample = _audio_input_chunk[i * input_channels];
-        total += static_cast<uint16_t>(std::abs(static_cast<int>(sample)));
-        frame.data[i * 2] = sample & 0xff;
-        frame.data[i * 2 + 1] = (sample >> 8) & 0xff;
+    if (input_channels == 1) {
+        memcpy(frame.data, _audio_input_chunk.data(), chunk_frames * sizeof(int16_t));
+        for (size_t i = 0; i < chunk_frames; ++i) {
+            total += static_cast<uint16_t>(std::abs(static_cast<int>(_audio_input_chunk[i])));
+        }
+    } else {
+        for (size_t i = 0; i < chunk_frames; ++i) {
+            int16_t sample = _audio_input_chunk[i * input_channels];
+            total += static_cast<uint16_t>(std::abs(static_cast<int>(sample)));
+            frame.data[i * 2] = sample & 0xff;
+            frame.data[i * 2 + 1] = (sample >> 8) & 0xff;
+        }
     }
     const int average = static_cast<int>(total / chunk_frames);
     const int level = clamp_int((average * 1000) / 12000, 0, 1000);
@@ -1678,6 +1773,7 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
         xQueueReceive(_audio_capture_pcm_queue, &dropped, 0);
         if (xQueueSend(_audio_capture_pcm_queue, &frame, 0) != pdTRUE) {
             _audio_input_failures++;
+            _mic_frames_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
     }
@@ -1695,8 +1791,7 @@ void AppRemoteAgent::copyCurrentPlaybackId(char* playbackId, size_t len)
 {
     if (!playbackId || len == 0) return;
     std::lock_guard<std::mutex> lock(_mutex);
-    strncpy(playbackId, _current_playback_id, len - 1);
-    playbackId[len - 1] = 0;
+    snprintf(playbackId, len, "%s", _current_playback_id);
 }
 
 uint32_t AppRemoteAgent::nextPlaybackGeneration()
@@ -1710,6 +1805,7 @@ void AppRemoteAgent::cancelPlayback(bool emit_event)
     const bool was_pending = _audio_playback_pending.exchange(false);
     const bool was_accepting = _websocket_playback_accepting.exchange(false);
     _audio_playback_cancel = true;
+    _websocket_playback_eos = true;
     _barge_in_enabled = false;
     _barge_in_reported = false;
     _playback_audio_level = 0;
@@ -1718,12 +1814,6 @@ void AppRemoteAgent::cancelPlayback(bool emit_event)
 
     if (_audio_playback_queue) {
         xQueueReset(_audio_playback_queue);
-    }
-    if (_audio_playback_pcm_queue) {
-        xQueueReset(_audio_playback_pcm_queue);
-        AudioPcmFrame end_frame;
-        end_frame.generation = _audio_playback_generation.load();
-        xQueueSend(_audio_playback_pcm_queue, &end_frame, 0);
     }
 
     if (emit_event && (was_active || was_pending || was_accepting) && !_audio_playback_interrupted_reported.exchange(true)) {
@@ -1761,7 +1851,7 @@ bool AppRemoteAgent::queueAudioPlayback(const char* requestId, const char* playb
 
 bool AppRemoteAgent::queueWebSocketAudioPlayback(const char* requestId, const char* playbackId, bool bargeIn)
 {
-    if (!_audio_playback_queue || !_audio_playback_pcm_queue) {
+    if (!_audio_playback_queue || !_audio_playback_ringbuf) {
         sendError(requestId, "audio playback unavailable");
         return false;
     }
@@ -1776,6 +1866,7 @@ bool AppRemoteAgent::queueWebSocketAudioPlayback(const char* requestId, const ch
     _audio_playback_pending = true;
     _audio_playback_interrupted_reported = false;
     _websocket_playback_accepting = true;
+    _websocket_playback_eos = false;
     _playback_queue_overflows = 0;
     if (xQueueSend(_audio_playback_queue, &request, 0) != pdTRUE) {
         _audio_playback_pending = false;
@@ -1786,23 +1877,38 @@ bool AppRemoteAgent::queueWebSocketAudioPlayback(const char* requestId, const ch
     return true;
 }
 
+void AppRemoteAgent::drainPlaybackRingBuffer()
+{
+    if (!_audio_playback_ringbuf) return;
+    while (true) {
+        size_t len = 0;
+        auto* item = static_cast<uint8_t*>(xRingbufferReceiveUpTo(_audio_playback_ringbuf, &len, 0, PLAYBACK_READ_BYTES));
+        if (!item) break;
+        vRingbufferReturnItem(_audio_playback_ringbuf, item);
+    }
+}
+
+size_t AppRemoteAgent::playbackRingBufferUsed() const
+{
+    if (!_audio_playback_ringbuf) return 0;
+    const size_t free_size = xRingbufferGetCurFreeSize(_audio_playback_ringbuf);
+    return free_size >= PLAYBACK_RING_BUFFER_BYTES ? 0 : PLAYBACK_RING_BUFFER_BYTES - free_size;
+}
+
 void AppRemoteAgent::queueWebSocketAudioFrame(const uint8_t* data, size_t len)
 {
-    if (!_audio_playback_pcm_queue) return;
+    if (!_audio_playback_ringbuf) return;
     if (!_websocket_playback_accepting) return;
-    AudioPcmFrame frame;
-    frame.len = std::min(len, sizeof(frame.data));
-    frame.generation = _audio_playback_generation.load();
-    if (data && frame.len > 0) {
-        memcpy(frame.data, data, frame.len);
+    if (!data || len == 0) {
+        _websocket_playback_eos = true;
+        return;
     }
-    const TickType_t wait_ticks = frame.len == 0 ? pdMS_TO_TICKS(100) : 0;
-    if (xQueueSend(_audio_playback_pcm_queue, &frame, wait_ticks) != pdTRUE) {
+    if (xRingbufferSend(_audio_playback_ringbuf, data, len, 0) != pdTRUE) {
         const uint32_t overflows = _playback_queue_overflows.fetch_add(1) + 1;
         const uint32_t now = GetHAL().millis();
         if (now - _last_playback_queue_full_log_at.load() > PLAYBACK_QUEUE_FULL_LOG_INTERVAL_MS) {
             _last_playback_queue_full_log_at = now;
-            mclog::tagInfo(TAG, "websocket playback queue full; dropped {} bytes, overflows={}", (int)frame.len,
+            mclog::tagInfo(TAG, "websocket playback ring full; dropped {} bytes, overflows={}", (int)len,
                            (unsigned)overflows);
         }
     }
@@ -1839,7 +1945,7 @@ void AppRemoteAgent::audioPlaybackLoop()
             sendPlaybackEvent("speechInterrupted", request.playbackId);
         }
     }
-    _audio_playback_task = nullptr;
+    _audio_playback_task.store(nullptr);
     vTaskDelete(nullptr);
 }
 
@@ -1873,7 +1979,7 @@ void AppRemoteAgent::audioCaptureSendLoop()
         _audio_input_failures = 0;
         ackPendingAudioStart();
     }
-    _audio_capture_send_task = nullptr;
+    _audio_capture_send_task.store(nullptr);
     vTaskDelete(nullptr);
 }
 
@@ -1882,6 +1988,20 @@ void AppRemoteAgent::audioCaptureLoop()
     bool input_enabled = false;
     while (!_tasks_stopping) {
         if (_connected) {
+            if (_standby) {
+                if (input_enabled) {
+                    auto audio_codec = Board::GetInstance().GetAudioCodec();
+                    if (audio_codec && audio_codec->input_enabled()) {
+                        mclog::tagInfo(TAG, "EnableInput(false) start (standby)");
+                        audio_codec->EnableInput(false);
+                        mclog::tagInfo(TAG, "EnableInput(false) end (standby)");
+                    }
+                    input_enabled = false;
+                }
+                _mic_audio_level = 0;
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
             if (!input_enabled) {
                 mclog::tagInfo(TAG, "audio capture loop sees connected true");
                 auto audio_codec = Board::GetInstance().GetAudioCodec();
@@ -1900,6 +2020,7 @@ void AppRemoteAgent::audioCaptureLoop()
                 mclog::tagInfo(TAG, "first InputData attempt");
             }
             captureAndSendAudioFrame();
+            taskYIELD();
             if (_audio_start_pending && _audio_stream_started_at.load() > 0 &&
                 GetHAL().millis() - _audio_stream_started_at.load() > AUDIO_START_TIMEOUT_MS &&
                 _last_audio_frame_sent_at.load() == 0) {
@@ -1929,7 +2050,7 @@ void AppRemoteAgent::audioCaptureLoop()
             mclog::tagInfo(TAG, "EnableInput(false) end on capture task exit");
         }
     }
-    _audio_capture_task = nullptr;
+    _audio_capture_task.store(nullptr);
     vTaskDelete(nullptr);
 }
 
@@ -1974,7 +2095,20 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
         const size_t header_size = color_preview ? 14 + 40 : 14 + 40 + 256 * 4;
         const size_t image_size = row_stride * CAMERA_PREVIEW_HEIGHT;
         const size_t file_size = header_size + image_size;
-        _camera_preview_bmp.assign(file_size, 0);
+        {
+            uint8_t* bmp_ptr = static_cast<uint8_t*>(heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (!bmp_ptr) {
+                bmp_ptr = static_cast<uint8_t*>(malloc(file_size));
+            }
+            if (!bmp_ptr) {
+                _camera_capture_active = false;
+                sendError(requestId, "camera buffer alloc failed");
+                return false;
+            }
+            memset(bmp_ptr, 0, file_size);
+            _camera_preview_bmp_buf.reset(bmp_ptr);
+            _camera_preview_bmp_size = file_size;
+        }
 
         uint8_t min_luma = 255;
         uint8_t max_luma = 0;
@@ -1996,18 +2130,18 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
         const int luma_range = max_luma > min_luma ? max_luma - min_luma : 0;
 
         auto put16 = [this](size_t offset, uint16_t value) {
-            _camera_preview_bmp[offset] = value & 0xff;
-            _camera_preview_bmp[offset + 1] = (value >> 8) & 0xff;
+            _camera_preview_bmp_buf[offset] = value & 0xff;
+            _camera_preview_bmp_buf[offset + 1] = (value >> 8) & 0xff;
         };
         auto put32 = [this](size_t offset, uint32_t value) {
-            _camera_preview_bmp[offset] = value & 0xff;
-            _camera_preview_bmp[offset + 1] = (value >> 8) & 0xff;
-            _camera_preview_bmp[offset + 2] = (value >> 16) & 0xff;
-            _camera_preview_bmp[offset + 3] = (value >> 24) & 0xff;
+            _camera_preview_bmp_buf[offset] = value & 0xff;
+            _camera_preview_bmp_buf[offset + 1] = (value >> 8) & 0xff;
+            _camera_preview_bmp_buf[offset + 2] = (value >> 16) & 0xff;
+            _camera_preview_bmp_buf[offset + 3] = (value >> 24) & 0xff;
         };
 
-        _camera_preview_bmp[0] = 'B';
-        _camera_preview_bmp[1] = 'M';
+        _camera_preview_bmp_buf[0] = 'B';
+        _camera_preview_bmp_buf[1] = 'M';
         put32(2, file_size);
         put32(10, header_size);
         put32(14, 40);
@@ -2019,15 +2153,15 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
         if (!color_preview) {
             for (int i = 0; i < 256; ++i) {
                 const size_t offset = 14 + 40 + i * 4;
-                _camera_preview_bmp[offset] = i;
-                _camera_preview_bmp[offset + 1] = i;
-                _camera_preview_bmp[offset + 2] = i;
+                _camera_preview_bmp_buf[offset] = i;
+                _camera_preview_bmp_buf[offset + 1] = i;
+                _camera_preview_bmp_buf[offset + 2] = i;
             }
         }
 
         for (int y = 0; y < CAMERA_PREVIEW_HEIGHT; ++y) {
             const int src_y = (y * height) / CAMERA_PREVIEW_HEIGHT;
-            uint8_t* row = _camera_preview_bmp.data() + header_size + (CAMERA_PREVIEW_HEIGHT - 1 - y) * row_stride;
+            uint8_t* row = _camera_preview_bmp_buf.get() + header_size + (CAMERA_PREVIEW_HEIGHT - 1 - y) * row_stride;
             for (int x = 0; x < CAMERA_PREVIEW_WIDTH; ++x) {
                 const int src_x = (x * width) / CAMERA_PREVIEW_WIDTH;
                 uint8_t luma = 0;
@@ -2059,7 +2193,7 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
         int event_len = snprintf(event, sizeof(event),
                                  R"({"type":"event","event":"cameraImage","requestId":"%s","width":%d,"height":%d,"mediaType":"image/bmp","bytes":%u})",
                                  requestId ? requestId : "", CAMERA_PREVIEW_WIDTH, CAMERA_PREVIEW_HEIGHT,
-                                 static_cast<unsigned>(_camera_preview_bmp.size()));
+                                 static_cast<unsigned>(_camera_preview_bmp_size));
         if (event_len <= 0 || event_len >= (int)sizeof(event)) {
             _camera_capture_active = false;
             sendError(requestId, "camera metadata failed");
@@ -2068,7 +2202,7 @@ bool AppRemoteAgent::captureAndSendCameraImage(const char* requestId, bool enhan
 
         std::lock_guard<std::mutex> lock(_send_mutex);
         sendWebSocketFrame(reinterpret_cast<const uint8_t*>(event), event_len, false);
-        sendWebSocketFrame(_camera_preview_bmp.data(), _camera_preview_bmp.size(), true);
+        sendWebSocketFrame(_camera_preview_bmp_buf.get(), _camera_preview_bmp_size, true);
         _camera_capture_active = false;
         logHeap("after captureImage preview");
         return true;
@@ -2122,7 +2256,7 @@ bool AppRemoteAgent::playWebSocketAudio(const AudioPlaybackRequest& request)
     _websocket_playback_accepting = true;
 
     auto audio_codec = Board::GetInstance().GetAudioCodec();
-    if (!audio_codec || !_audio_playback_pcm_queue) {
+    if (!audio_codec || !_audio_playback_ringbuf) {
         _audio_playback_active = false;
         _websocket_playback_accepting = false;
         mclog::tagInfo(TAG, "websocket playback end: audio playback unavailable");
@@ -2132,7 +2266,7 @@ bool AppRemoteAgent::playWebSocketAudio(const AudioPlaybackRequest& request)
 
     const uint32_t prebuffer_started_at = GetHAL().millis();
     while (!_audio_playback_cancel && !_tasks_stopping &&
-           uxQueueMessagesWaiting(_audio_playback_pcm_queue) < PLAYBACK_PREBUFFER_FRAMES &&
+           !_websocket_playback_eos && playbackRingBufferUsed() < PLAYBACK_PREBUFFER_BYTES &&
            GetHAL().millis() - prebuffer_started_at < PLAYBACK_PREBUFFER_TIMEOUT_MS) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -2146,45 +2280,51 @@ bool AppRemoteAgent::playWebSocketAudio(const AudioPlaybackRequest& request)
     audio_codec->EnableOutput(true);
     mclog::tagInfo(TAG, "EnableOutput(true) end");
 
-    AudioPcmFrame frame;
     std::vector<int16_t> samples;
-    samples.reserve(512);
+    samples.reserve(PLAYBACK_READ_BYTES / 2 + 1);
     bool has_pending_byte = false;
     uint8_t pending_byte = 0;
     uint32_t playback_started_at = 0;
+    uint32_t last_pcm_at = GetHAL().millis();
     size_t playback_samples = 0;
     bool natural_completion = false;
 
     while (!_audio_playback_cancel && !_tasks_stopping) {
-        if (xQueueReceive(_audio_playback_pcm_queue, &frame, pdMS_TO_TICKS(3000)) != pdTRUE) {
-            mclog::tagInfo(TAG, "websocket playback timeout waiting for PCM");
-            break;
-        }
+        size_t frame_len = 0;
+        auto* frame_data = static_cast<uint8_t*>(
+            xRingbufferReceiveUpTo(_audio_playback_ringbuf, &frame_len, pdMS_TO_TICKS(20), PLAYBACK_READ_BYTES));
         if (_audio_playback_cancel) {
+            if (frame_data) vRingbufferReturnItem(_audio_playback_ringbuf, frame_data);
             break;
         }
-        if (frame.generation != request.generation) {
+        if (!frame_data) {
+            if (_websocket_playback_eos && playbackRingBufferUsed() == 0) {
+                natural_completion = true;
+                break;
+            }
+            if (GetHAL().millis() - last_pcm_at > 3000) {
+                mclog::tagInfo(TAG, "websocket playback timeout waiting for PCM");
+                break;
+            }
             continue;
         }
-        if (frame.len == 0) {
-            natural_completion = true;
-            break;
-        }
+        last_pcm_at = GetHAL().millis();
 
         samples.clear();
         size_t offset = 0;
-        if (has_pending_byte && frame.len > 0) {
-            samples.push_back(static_cast<int16_t>(pending_byte | (frame.data[0] << 8)));
+        if (has_pending_byte && frame_len > 0) {
+            samples.push_back(static_cast<int16_t>(pending_byte | (frame_data[0] << 8)));
             has_pending_byte = false;
             offset = 1;
         }
-        for (size_t i = offset; i + 1 < frame.len; i += 2) {
-            samples.push_back(static_cast<int16_t>(frame.data[i] | (frame.data[i + 1] << 8)));
+        for (size_t i = offset; i + 1 < frame_len; i += 2) {
+            samples.push_back(static_cast<int16_t>(frame_data[i] | (frame_data[i + 1] << 8)));
         }
-        if (((frame.len - offset) & 1) != 0) {
-            pending_byte = frame.data[frame.len - 1];
+        if (((frame_len - offset) & 1) != 0) {
+            pending_byte = frame_data[frame_len - 1];
             has_pending_byte = true;
         }
+        vRingbufferReturnItem(_audio_playback_ringbuf, frame_data);
         if (!samples.empty()) {
             if (playback_started_at == 0) {
                 playback_started_at = GetHAL().millis();
@@ -2200,6 +2340,7 @@ bool AppRemoteAgent::playWebSocketAudio(const AudioPlaybackRequest& request)
     const bool current_generation = _audio_playback_generation.load() == request.generation;
     if (current_generation) {
         _websocket_playback_accepting = false;
+        _websocket_playback_eos = false;
     }
     if (natural_completion && playback_started_at > 0 && !_audio_playback_cancel) {
         const uint32_t expected_ms = static_cast<uint32_t>(playback_samples / 24);
@@ -2214,9 +2355,7 @@ bool AppRemoteAgent::playWebSocketAudio(const AudioPlaybackRequest& request)
         }
     }
     _playback_audio_level = 0;
-    if (current_generation && _audio_playback_pcm_queue) {
-        xQueueReset(_audio_playback_pcm_queue);
-    }
+    drainPlaybackRingBuffer();
     mclog::tagInfo(TAG, "EnableOutput(false) start");
     audio_codec->EnableOutput(false);
     mclog::tagInfo(TAG, "EnableOutput(false) end");
@@ -2307,7 +2446,6 @@ bool AppRemoteAgent::playAudioUrl(const char* url, const char* playbackId)
             audio_codec->OutputData(samples);
         }
         GetHAL().feedTheDog();
-        vTaskDelay(1);
     }
     if (natural_completion && playback_started_at > 0 && !_audio_playback_cancel) {
         const uint32_t expected_ms = static_cast<uint32_t>(playback_samples / 24);

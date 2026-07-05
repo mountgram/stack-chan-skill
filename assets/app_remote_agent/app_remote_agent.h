@@ -5,6 +5,7 @@
 
 #include <mooncake.h>
 #include <atomic>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -15,6 +16,7 @@
 #include <esp_http_server.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/ringbuf.h>
 #include <freertos/task.h>
 
 class StackyWakeWordDetector;
@@ -98,17 +100,18 @@ public:
 private:
 
     httpd_handle_t _websocket_server = nullptr;
-    int _websocket_fd = -1;
+    std::atomic<int> _websocket_fd{-1};
     std::unique_ptr<StackyWakeWordDetector> _wake_word_detector;
     std::mutex _mutex;
     std::mutex _send_mutex;
     std::queue<ReceivedMessage> _messages;
     QueueHandle_t _audio_playback_queue = nullptr;
-    QueueHandle_t _audio_playback_pcm_queue = nullptr;
+    RingbufHandle_t _audio_playback_ringbuf = nullptr;
+    bool _audio_playback_ringbuf_in_psram = false;
     QueueHandle_t _audio_capture_pcm_queue = nullptr;
-    TaskHandle_t _audio_playback_task   = nullptr;
-    TaskHandle_t _audio_capture_task    = nullptr;
-    TaskHandle_t _audio_capture_send_task = nullptr;
+    std::atomic<TaskHandle_t> _audio_playback_task{nullptr};
+    std::atomic<TaskHandle_t> _audio_capture_task{nullptr};
+    std::atomic<TaskHandle_t> _audio_capture_send_task{nullptr};
     lv_obj_t* _root         = nullptr;
     lv_obj_t* _status_dot   = nullptr;
     lv_obj_t* _main_label   = nullptr;
@@ -122,20 +125,24 @@ private:
     std::atomic_bool _audio_streaming{false};
     std::atomic_bool _audio_start_pending{false};
     std::atomic_bool _audio_first_input_attempt_logged{false};
+    std::atomic_bool _audio_first_input_success_logged{false};
     std::atomic_bool _audio_playback_active{false};
     std::atomic_bool _audio_playback_pending{false};
     std::atomic_bool _audio_playback_cancel{false};
     std::atomic_bool _audio_playback_interrupted_reported{false};
     std::atomic_bool _websocket_playback_accepting{false};
+    std::atomic_bool _websocket_playback_eos{false};
     std::atomic_bool _barge_in_enabled{false};
     std::atomic_bool _barge_in_reported{false};
     std::atomic_bool _camera_capture_active{false};
     std::atomic_bool _tasks_stopping{false};
+    std::atomic_bool _standby{false};
     std::atomic<uint32_t> _audio_stream_started_at{0};
     std::atomic<uint32_t> _last_audio_frame_sent_at{0};
     std::atomic<uint32_t> _audio_playback_generation{0};
     std::atomic<uint32_t> _last_playback_queue_full_log_at{0};
     std::atomic<uint32_t> _playback_queue_overflows{0};
+    std::atomic<uint32_t> _mic_frames_dropped{0};
     std::atomic_int _volume{90};
     std::atomic_int _mic_audio_level{0};
     std::atomic_int _playback_audio_level{0};
@@ -147,7 +154,10 @@ private:
     std::string _render_scene_id;
     std::string _render_scene_json;
     std::vector<int16_t> _audio_input_chunk;
-    std::vector<uint8_t> _camera_preview_bmp;
+    std::vector<uint8_t> _ws_recv_buf;
+    struct CameraBmpFree { void operator()(uint8_t* p) const noexcept { free(p); } };
+    std::unique_ptr<uint8_t[], CameraBmpFree> _camera_preview_bmp_buf;
+    size_t _camera_preview_bmp_size = 0;
     std::vector<RenderNodeRef> _render_nodes;
     uint32_t _render_animation_last_frame_at = 0;
     std::vector<RenderAnimationState> _render_animations;
@@ -207,6 +217,8 @@ private:
     uint32_t nextPlaybackGeneration();
     bool queueAudioPlayback(const char* requestId, const char* playbackId, const char* url, bool bargeIn);
     bool queueWebSocketAudioPlayback(const char* requestId, const char* playbackId, bool bargeIn);
+    void drainPlaybackRingBuffer();
+    size_t playbackRingBufferUsed() const;
     void queueWebSocketAudioFrame(const uint8_t* data, size_t len);
     void audioPlaybackLoop();
     void audioCaptureLoop();
@@ -218,4 +230,5 @@ private:
     static void audioPlaybackTaskEntry(void* arg);
     static void audioCaptureTaskEntry(void* arg);
     static void audioCaptureSendTaskEntry(void* arg);
+    static void cameraTaskEntry(void* arg);
 };
