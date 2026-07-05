@@ -34,6 +34,12 @@ Install the skill with the Skills CLI, then open Claude Code, OpenCode, Codex, o
 npx skills add mountgram/stack-chan-skill
 ```
 
+### Skills CLI Packaging Note
+
+This repository intentionally does not keep an installable `SKILL.md` at the repository root. The Skills CLI treats a root `SKILL.md` as a single-file skill and installs only that file, which drops the bundled `assets/`, `references/`, and `scripts/` directories on update.
+
+The installable skill lives at `skills/stack-chan-skill/SKILL.md`. The root install command above still works because the CLI discovers that one skill under `skills/` and copies the whole skill folder. Do not restore a root `SKILL.md` unless the Skills CLI behavior changes and full-directory root skills are verified.
+
 Copy-paste this into your agent if you are starting fresh:
 
 ```text
