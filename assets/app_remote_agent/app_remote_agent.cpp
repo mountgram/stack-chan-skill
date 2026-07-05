@@ -69,6 +69,7 @@ static constexpr size_t PLAYBACK_READ_BYTES = 2048;
 static constexpr uint32_t PLAYBACK_PREBUFFER_TIMEOUT_MS = 250;
 static constexpr uint32_t PLAYBACK_QUEUE_FULL_LOG_INTERVAL_MS = 1000;
 static constexpr size_t MIN_INTERNAL_SRAM_SPEAK = 8192;
+static constexpr size_t MIN_INTERNAL_SRAM_WAKE_WORD = 64 * 1024;
 static constexpr size_t MIN_INTERNAL_SRAM_RENDER = 12288;
 static constexpr size_t MIN_INTERNAL_SRAM_CAMERA = 12288;
 static constexpr size_t MIN_INTERNAL_SRAM_CAMERA_ENHANCED = 32768;
@@ -818,7 +819,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
         const char* audioTransport = doc["audioTransport"] | "";
         const char* playbackId = doc["playbackId"] | "";
         const bool bargeIn = doc["bargeIn"] | false;
-        releaseWakeWordDetector();
+        disarmWakeWord(0);
         logHeap("before speak");
         if (!hasInternalSram(MIN_INTERNAL_SRAM_SPEAK, "speak")) {
             sendError(requestId, "low memory for speech");
@@ -853,6 +854,7 @@ void AppRemoteAgent::handleMessage(const std::string& data)
     if (strcmp(type, "startAudio") == 0) {
         mclog::tagInfo(TAG, "received startAudio requestId={}", requestId);
         _standby = false;
+        disarmWakeWord(0);
         _audio_streaming = true;
         if (_audio_capture_task.load() && _audio_capture_send_task.load()) {
             sendAck(requestId);
@@ -872,12 +874,21 @@ void AppRemoteAgent::handleMessage(const std::string& data)
             const char* phrase                     = wake_word["phrase"] | "Stacky";
             if (strcmp(model_id, "stacky") != 0 || strcmp(phrase, "Stacky") != 0) {
                 mclog::tagInfo(TAG, "wake word model unavailable; falling back to tap standby");
+                disarmWakeWord(500);
                 text = "Standby. Tap to talk.";
             } else {
-                mclog::tagInfo(TAG, "wake word standby requested; full-duplex mic stream remains server-owned");
+                if (!ensureWakeWordDetector(WAKE_WORD_DEFAULT_CUTOFF, WAKE_WORD_DEFAULT_SLIDING_WINDOW) ||
+                    !_wake_word_detector->arm()) {
+                    mclog::tagInfo(TAG, "wake word detector unavailable; falling back to tap standby");
+                    disarmWakeWord(500);
+                    text = "Standby. Tap to talk.";
+                } else {
+                    mclog::tagInfo(TAG, "wake word detector armed; full-duplex mic stream remains active");
+                }
             }
+        } else {
+            disarmWakeWord(500);
         }
-        disarmWakeWord(500);
         setStatus("standby", text);
         sendAck(requestId);
         return;
@@ -1178,11 +1189,11 @@ bool AppRemoteAgent::sendPacketIfSendIdle(uint8_t type, const uint8_t* data, siz
 void AppRemoteAgent::sendHello()
 {
     auto id = GetHAL().getFactoryMacString("");
-    const bool wake_word_ready = false;
+    const bool wake_word_ready = ensureWakeWordDetector(WAKE_WORD_DEFAULT_CUTOFF, WAKE_WORD_DEFAULT_SLIDING_WINDOW);
     char buffer[1600];
     if (wake_word_ready) {
         snprintf(buffer, sizeof(buffer),
-                  R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","hold","audio","fullDuplexAudio","playbackControl","bargeIn","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.99,"slidingWindow":10}]},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
+                  R"({"type":"hello","id":"stacky-%s","version":2,"capabilities":["screen","face","look","led","telemetry","tap","hold","audio","fullDuplexAudio","playbackControl","bargeIn","camera","volume","standby","wakeWord","render"],"wakeWord":{"version":1,"models":[{"id":"stacky","phrase":"Stacky","sampleRate":16000,"cutoff":0.99,"slidingWindow":10,"source":"firmware"}],"dynamicModels":false},"render":{"version":1,"screen":{"width":320,"height":240,"fps":30},"primitives":["group","circle","ellipse","rect"],"transforms":["translate","scale","rotate","opacity"],"animations":["keyframes","audioLevel"],"audioLevelSources":["playback","mic","any"],"limits":{"maxNodes":64,"maxSceneBytes":16384,"maxAnimationMs":300000,"maxActiveAnimations":4,"maxActiveTracks":32}}})",
                   id.c_str());
     } else {
         snprintf(buffer, sizeof(buffer),
@@ -1681,6 +1692,9 @@ bool AppRemoteAgent::ensureWakeWordDetector(float cutoff, size_t sliding_window)
     if (_wake_word_detector) {
         return true;
     }
+    if (!hasInternalSram(MIN_INTERNAL_SRAM_WAKE_WORD, "wakeWord")) {
+        return false;
+    }
 
     auto detector = std::make_unique<StackyWakeWordDetector>(cutoff, sliding_window);
     if (!detector->begin([this](const std::string& wake_word) { handleWakeWordDetected(wake_word); })) {
@@ -1708,7 +1722,8 @@ void AppRemoteAgent::handleWakeWordDetected(const std::string& wake_word)
 {
     queueStatus("listening", "Wake word heard");
     char buffer[192];
-    snprintf(buffer, sizeof(buffer), R"({"type":"event","event":"wakeWord","wakeWord":"%s","modelId":"stacky","at":%lu})",
+    snprintf(buffer, sizeof(buffer),
+             R"({"type":"event","event":"wakeWord","wakeWord":"%s","modelId":"stacky","score":1.0,"at":%lu})",
              wake_word.c_str(), (unsigned long)GetHAL().millis());
     sendJson(buffer);
 }
@@ -1739,6 +1754,10 @@ bool AppRemoteAgent::captureAndSendAudioFrame()
     }
     if (!_audio_first_input_success_logged.exchange(true)) {
         mclog::tagInfo(TAG, "first successful InputData");
+    }
+    if (_wake_word_detector && _wake_word_detector->isArmed()) {
+        const int input_sample_rate = audio_codec->input_sample_rate() > 0 ? audio_codec->input_sample_rate() : 24000;
+        _wake_word_detector->feedAudio(_audio_input_chunk.data(), chunk_frames, input_sample_rate, static_cast<int>(input_channels));
     }
     if (chunk_frames * 2 > sizeof(AudioPcmFrame::data)) {
         return false;
@@ -1988,20 +2007,6 @@ void AppRemoteAgent::audioCaptureLoop()
     bool input_enabled = false;
     while (!_tasks_stopping) {
         if (_connected) {
-            if (_standby) {
-                if (input_enabled) {
-                    auto audio_codec = Board::GetInstance().GetAudioCodec();
-                    if (audio_codec && audio_codec->input_enabled()) {
-                        mclog::tagInfo(TAG, "EnableInput(false) start (standby)");
-                        audio_codec->EnableInput(false);
-                        mclog::tagInfo(TAG, "EnableInput(false) end (standby)");
-                    }
-                    input_enabled = false;
-                }
-                _mic_audio_level = 0;
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
             if (!input_enabled) {
                 mclog::tagInfo(TAG, "audio capture loop sees connected true");
                 auto audio_codec = Board::GetInstance().GetAudioCodec();

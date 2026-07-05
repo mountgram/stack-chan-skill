@@ -20,6 +20,7 @@ public:
     bool arm();
     void disarm(uint32_t wait_ms = 0);
     void shutdown();
+    void feedAudio(const int16_t* samples, size_t frames, int sample_rate, int channels);
     bool isArmed() const;
 
 private:

@@ -14,7 +14,7 @@ Read this when implementing firmware or server messages.
 
 ```json
 { "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "fullDuplexAudio", "playbackControl", "bargeIn", "camera", "volume", "standby", "render"] }
-{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "fullDuplexAudio", "playbackControl", "bargeIn", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10 }] } }
+{ "type": "hello", "id": "stacky-abc", "version": 2, "capabilities": ["screen", "face", "look", "led", "telemetry", "tap", "hold", "audio", "fullDuplexAudio", "playbackControl", "bargeIn", "camera", "volume", "standby", "wakeWord", "render"], "wakeWord": { "version": 1, "models": [{ "id": "stacky", "phrase": "Stacky", "sampleRate": 16000, "cutoff": 0.99, "slidingWindow": 10, "source": "firmware" }], "dynamicModels": false } }
 { "type": "telemetry", "battery": 82, "charging": true, "wifiRssi": -55, "pose": { "yaw": 0, "pitch": 35 } }
 { "type": "event", "event": "tap", "at": 123456 }
 { "type": "event", "event": "hold", "at": 123789 }
