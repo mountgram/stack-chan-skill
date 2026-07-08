@@ -14,6 +14,7 @@
 
 #include <ArduinoJson.hpp>
 #include <esp_http_server.h>
+#include <esp_websocket_client.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/ringbuf.h>
@@ -101,6 +102,17 @@ private:
 
     httpd_handle_t _websocket_server = nullptr;
     std::atomic<int> _websocket_fd{-1};
+    // Outbound brain link: when a brain URL is configured (POST /stacky/brain),
+    // the robot dials out instead of waiting for a LAN connection. A local
+    // brain connecting to the device server always wins and suspends this.
+    esp_websocket_client_handle_t _ws_client = nullptr;
+    std::atomic_bool _client_link_active{false};
+    std::atomic_bool _brain_config_dirty{false};
+    std::string _brain_url;
+    std::string _brain_token;
+    std::string _ws_client_headers;
+    std::vector<uint8_t> _ws_client_rx;
+    uint8_t _ws_client_rx_opcode = 0;
     std::unique_ptr<StackyWakeWordDetector> _wake_word_detector;
     std::mutex _mutex;
     std::mutex _send_mutex;
@@ -175,6 +187,16 @@ private:
     void handleWebSocketDisconnected(int fd);
     esp_err_t handleWebSocketFrame(httpd_req_t* req);
     bool sendWebSocketFrame(const uint8_t* data, size_t len, bool binary);
+    void loadBrainConfig();
+    bool saveBrainConfig(const std::string& url, const std::string& token);
+    void maintainBrainClient();
+    void startBrainClient();
+    void stopBrainClient();
+    void handleClientLinkOpened();
+    void handleClientLinkClosed();
+    void handleClientData(const esp_websocket_event_data_t* data);
+    void handleBrainBinaryPacket(const uint8_t* data, size_t len);
+    std::string offlineStatusText();
     void startAudioTasks();
     void stopAudioTasks();
     void processMessages();
@@ -227,6 +249,8 @@ private:
     bool playWebSocketAudio(const AudioPlaybackRequest& request);
     static esp_err_t webSocketHandler(httpd_req_t* req);
     static void webSocketCloseHandler(httpd_handle_t server, int fd);
+    static esp_err_t brainConfigHandler(httpd_req_t* req);
+    static void wsClientEventHandler(void* arg, esp_event_base_t base, int32_t event_id, void* event_data);
     static void audioPlaybackTaskEntry(void* arg);
     static void audioCaptureTaskEntry(void* arg);
     static void audioCaptureSendTaskEntry(void* arg);

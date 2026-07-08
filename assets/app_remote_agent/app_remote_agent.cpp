@@ -10,9 +10,11 @@
 #include <assets/assets.h>
 #include <audio/audio_codec.h>
 #include <board.h>
+#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_netif.h>
+#include <nvs.h>
 #include <hal/board/config.h>
 #include <hal/board/hal_bridge.h>
 #include <hal/hal.h>
@@ -42,6 +44,8 @@ using namespace stackchan;
 
 static const char* TAG = "REMOTE.AGENT";
 static const char* STACKY_WS_PATH = "/stacky/device";
+static const char* STACKY_BRAIN_CONFIG_PATH = "/stacky/brain";
+static const char* STACKY_NVS_NAMESPACE = "stacky";
 static AppRemoteAgent* s_websocket_app = nullptr;
 
 static std::string websocket_listen_url()
@@ -294,6 +298,7 @@ void AppRemoteAgent::onOpen()
         view::create_home_indicator([&]() { close(); }, 0x33CC99, 0x134233);
     }
 
+    loadBrainConfig();
     setStatus("connecting", "Starting Wi-Fi...");
     GetHAL().startNetwork([this](std::string_view msg) {
         char buffer[120];
@@ -361,7 +366,7 @@ void AppRemoteAgent::startWebSocketServer()
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = STACKY_WS_PORT;
-    config.max_open_sockets = 2;
+    config.max_open_sockets = 3;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 1;
     config.send_wait_timeout = 1;
@@ -394,7 +399,18 @@ void AppRemoteAgent::startWebSocketServer()
         return;
     }
 
-    setStatus("offline", websocket_listen_url().c_str());
+    httpd_uri_t brain_get = {};
+    brain_get.uri = STACKY_BRAIN_CONFIG_PATH;
+    brain_get.method = HTTP_GET;
+    brain_get.handler = AppRemoteAgent::brainConfigHandler;
+    brain_get.user_ctx = this;
+    httpd_register_uri_handler(_websocket_server, &brain_get);
+
+    httpd_uri_t brain_post = brain_get;
+    brain_post.method = HTTP_POST;
+    httpd_register_uri_handler(_websocket_server, &brain_post);
+
+    setStatus("offline", offlineStatusText().c_str());
 }
 
 void AppRemoteAgent::stopWebSocketServer()
@@ -453,7 +469,7 @@ void AppRemoteAgent::handleWebSocketDisconnected(int fd)
     _mic_audio_level = 0;
     _playback_audio_level = 0;
     disarmWakeWord(500);
-    queueStatus("offline", websocket_listen_url().c_str());
+    queueStatus("offline", offlineStatusText().c_str());
 }
 
 esp_err_t AppRemoteAgent::handleWebSocketFrame(httpd_req_t* req)
@@ -485,19 +501,23 @@ esp_err_t AppRemoteAgent::handleWebSocketFrame(httpd_req_t* req)
     if (frame.type == HTTPD_WS_TYPE_TEXT) {
         std::lock_guard<std::mutex> lock(_mutex);
         _messages.push({false, std::string(reinterpret_cast<char*>(_ws_recv_buf.data()), frame.len)});
-    } else if (frame.type == HTTPD_WS_TYPE_BINARY && frame.len >= 5) {
-        const uint8_t packet_type = _ws_recv_buf[0];
-        const size_t packet_len = (static_cast<size_t>(_ws_recv_buf[1]) << 24) |
-                                  (static_cast<size_t>(_ws_recv_buf[2]) << 16) |
-                                  (static_cast<size_t>(_ws_recv_buf[3]) << 8) |
-                                  static_cast<size_t>(_ws_recv_buf[4]);
-        if (packet_type == PACKET_AUDIO_PLAYBACK_PCM && packet_len <= frame.len - 5) {
-            queueWebSocketAudioFrame(_ws_recv_buf.data() + 5, packet_len);
-        } else if (packet_type == PACKET_AUDIO_PLAYBACK_END) {
-            queueWebSocketAudioFrame(nullptr, 0);
-        }
+    } else if (frame.type == HTTPD_WS_TYPE_BINARY) {
+        handleBrainBinaryPacket(_ws_recv_buf.data(), frame.len);
     }
     return ESP_OK;
+}
+
+void AppRemoteAgent::handleBrainBinaryPacket(const uint8_t* data, size_t len)
+{
+    if (!data || len < 5) return;
+    const uint8_t packet_type = data[0];
+    const size_t packet_len = (static_cast<size_t>(data[1]) << 24) | (static_cast<size_t>(data[2]) << 16) |
+                              (static_cast<size_t>(data[3]) << 8) | static_cast<size_t>(data[4]);
+    if (packet_type == PACKET_AUDIO_PLAYBACK_PCM && packet_len <= len - 5) {
+        queueWebSocketAudioFrame(data + 5, packet_len);
+    } else if (packet_type == PACKET_AUDIO_PLAYBACK_END) {
+        queueWebSocketAudioFrame(nullptr, 0);
+    }
 }
 
 esp_err_t AppRemoteAgent::webSocketHandler(httpd_req_t* req)
@@ -517,6 +537,309 @@ void AppRemoteAgent::webSocketCloseHandler(httpd_handle_t server, int fd)
         s_websocket_app->handleWebSocketDisconnected(fd);
     }
     ::close(fd);
+}
+
+// ── Outbound brain link (robot dials a remote brain) ──
+
+std::string AppRemoteAgent::offlineStatusText()
+{
+    std::string url;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        url = _brain_url;
+    }
+    if (!url.empty()) return "Dialing " + url;
+    return websocket_listen_url();
+}
+
+void AppRemoteAgent::loadBrainConfig()
+{
+    nvs_handle_t handle;
+    if (nvs_open(STACKY_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    auto read = [&](const char* key, std::string& out) {
+        size_t len = 0;
+        if (nvs_get_str(handle, key, nullptr, &len) != ESP_OK || len == 0) return;
+        std::vector<char> buffer(len);
+        if (nvs_get_str(handle, key, buffer.data(), &len) == ESP_OK) out.assign(buffer.data());
+    };
+    std::string url, token;
+    read("brain_url", url);
+    read("brain_token", token);
+    nvs_close(handle);
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _brain_url = url;
+        _brain_token = token;
+    }
+    if (!url.empty()) mclog::tagInfo(TAG, "brain dial-out configured: {}", url);
+}
+
+bool AppRemoteAgent::saveBrainConfig(const std::string& url, const std::string& token)
+{
+    nvs_handle_t handle;
+    if (nvs_open(STACKY_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+    bool ok = true;
+    if (url.empty()) {
+        nvs_erase_key(handle, "brain_url");
+        nvs_erase_key(handle, "brain_token");
+    } else {
+        ok = nvs_set_str(handle, "brain_url", url.c_str()) == ESP_OK && ok;
+        if (token.empty()) nvs_erase_key(handle, "brain_token");
+        else ok = nvs_set_str(handle, "brain_token", token.c_str()) == ESP_OK && ok;
+    }
+    ok = nvs_commit(handle) == ESP_OK && ok;
+    nvs_close(handle);
+    return ok;
+}
+
+void AppRemoteAgent::maintainBrainClient()
+{
+    // A locally connected brain owns the robot; the dial-out link stands down.
+    if (_websocket_fd.load() >= 0) {
+        if (_ws_client) stopBrainClient();
+        return;
+    }
+    if (_brain_config_dirty.exchange(false)) stopBrainClient();
+
+    std::string url;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        url = _brain_url;
+    }
+    if (url.empty()) {
+        if (_ws_client) stopBrainClient();
+        return;
+    }
+    if (_ws_client) return;
+
+    auto* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info = {};
+    if (!netif || esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) return;
+    startBrainClient();
+}
+
+void AppRemoteAgent::startBrainClient()
+{
+    std::string url, token;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        url = _brain_url;
+        token = _brain_token;
+    }
+    if (url.empty() || _ws_client) return;
+
+    _ws_client_headers.clear();
+    if (!token.empty()) _ws_client_headers = "Authorization: Bearer " + token + "\r\n";
+
+    esp_websocket_client_config_t config = {};
+    config.uri = url.c_str();
+    if (!_ws_client_headers.empty()) config.headers = _ws_client_headers.c_str();
+    config.buffer_size = 4096;
+    config.task_stack = 8192;
+    config.reconnect_timeout_ms = 3000;
+    config.network_timeout_ms = 10000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_websocket_client_handle_t client = esp_websocket_client_init(&config);
+    if (!client) {
+        mclog::tagInfo(TAG, "brain client init failed");
+        return;
+    }
+    esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, AppRemoteAgent::wsClientEventHandler, this);
+    if (esp_websocket_client_start(client) != ESP_OK) {
+        mclog::tagInfo(TAG, "brain client start failed");
+        esp_websocket_client_destroy(client);
+        return;
+    }
+    _ws_client = client;
+    mclog::tagInfo(TAG, "dialing brain {}", url);
+    queueStatus("connecting", offlineStatusText().c_str());
+}
+
+void AppRemoteAgent::stopBrainClient()
+{
+    esp_websocket_client_handle_t client = _ws_client;
+    if (!client) return;
+    _ws_client = nullptr;
+    const bool was_active = _client_link_active.exchange(false);
+    esp_websocket_client_destroy(client);
+    _ws_client_rx.clear();
+    _ws_client_rx_opcode = 0;
+    if (was_active && _websocket_fd.load() < 0) {
+        _connected = false;
+        _hello_pending = false;
+        _audio_streaming = false;
+        cancelPlayback(false);
+        queueStatus("offline", offlineStatusText().c_str());
+    }
+}
+
+void AppRemoteAgent::handleClientLinkOpened()
+{
+    if (_websocket_fd.load() >= 0) return;
+    _connected = false;
+    _hello_pending = false;
+    _standby = false;
+    _audio_streaming = true;
+    cancelPlayback(false);
+    failPendingAudioStart("new brain connection opened");
+    _mic_audio_level = 0;
+    _playback_audio_level = 0;
+    _audio_stream_started_at = GetHAL().millis();
+    _last_audio_frame_sent_at = 0;
+    _audio_input_failures = 0;
+    _audio_first_input_attempt_logged = false;
+    _audio_first_input_success_logged = false;
+    if (_audio_capture_pcm_queue) {
+        xQueueReset(_audio_capture_pcm_queue);
+    }
+    _client_link_active = true;
+    _connected = true;
+    _hello_pending = true;
+    mclog::tagInfo(TAG, "brain link connected");
+    queueStatus("connected", "Ready (remote brain)");
+}
+
+void AppRemoteAgent::handleClientLinkClosed()
+{
+    if (!_client_link_active.exchange(false)) return;
+    _ws_client_rx.clear();
+    _ws_client_rx_opcode = 0;
+    if (_websocket_fd.load() >= 0) return;
+    _connected = false;
+    _hello_pending = false;
+    _standby = false;
+    _audio_streaming = false;
+    cancelPlayback(false);
+    failPendingAudioStart("connection closed before audio capture started");
+    if (_audio_capture_pcm_queue) {
+        xQueueReset(_audio_capture_pcm_queue);
+    }
+    _mic_audio_level = 0;
+    _playback_audio_level = 0;
+    disarmWakeWord(500);
+    queueStatus("offline", offlineStatusText().c_str());
+}
+
+void AppRemoteAgent::handleClientData(const esp_websocket_event_data_t* data)
+{
+    if (!data) return;
+    if (data->op_code == 0x08 || data->op_code == 0x09 || data->op_code == 0x0A) return;
+    if (data->op_code == 0x01 || data->op_code == 0x02) {
+        if (data->payload_offset == 0) {
+            _ws_client_rx.clear();
+            _ws_client_rx_opcode = data->op_code;
+        }
+    } else if (data->op_code != 0x00) {
+        return;
+    }
+    if (_ws_client_rx_opcode == 0) return;
+    if (_ws_client_rx.size() + data->data_len > 256 * 1024) {
+        mclog::tagInfo(TAG, "brain frame too large; dropping");
+        _ws_client_rx.clear();
+        _ws_client_rx_opcode = 0;
+        return;
+    }
+    if (data->data_len > 0) {
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data->data_ptr);
+        _ws_client_rx.insert(_ws_client_rx.end(), bytes, bytes + data->data_len);
+    }
+    // Frames can arrive in library-buffer-sized slices, and intermediaries
+    // (the Cloudflare tunnel) may also re-fragment messages; dispatch only
+    // once the frame is fully received and final.
+    const bool frame_complete = data->payload_offset + data->data_len >= data->payload_len;
+    if (!frame_complete || !data->fin) return;
+
+    if (_ws_client_rx_opcode == 0x01) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _messages.push({false, std::string(reinterpret_cast<const char*>(_ws_client_rx.data()), _ws_client_rx.size())});
+    } else {
+        handleBrainBinaryPacket(_ws_client_rx.data(), _ws_client_rx.size());
+    }
+    _ws_client_rx.clear();
+    _ws_client_rx_opcode = 0;
+}
+
+void AppRemoteAgent::wsClientEventHandler(void* arg, esp_event_base_t base, int32_t event_id, void* event_data)
+{
+    auto* app = static_cast<AppRemoteAgent*>(arg);
+    if (!app) return;
+    switch (event_id) {
+        case WEBSOCKET_EVENT_CONNECTED:
+            app->handleClientLinkOpened();
+            break;
+        case WEBSOCKET_EVENT_DISCONNECTED:
+        case WEBSOCKET_EVENT_CLOSED:
+            app->handleClientLinkClosed();
+            break;
+        case WEBSOCKET_EVENT_DATA:
+            app->handleClientData(static_cast<esp_websocket_event_data_t*>(event_data));
+            break;
+        default:
+            break;
+    }
+}
+
+esp_err_t AppRemoteAgent::brainConfigHandler(httpd_req_t* req)
+{
+    auto* app = static_cast<AppRemoteAgent*>(req->user_ctx);
+    if (!app) return ESP_ERR_INVALID_ARG;
+    httpd_resp_set_type(req, "application/json");
+
+    if (req->method == HTTP_GET) {
+        std::string url;
+        bool has_token;
+        {
+            std::lock_guard<std::mutex> lock(app->_mutex);
+            url = app->_brain_url;
+            has_token = !app->_brain_token.empty();
+        }
+        const char* brain = app->_websocket_fd.load() >= 0 ? "local"
+                            : (app->_client_link_active.load() ? "remote" : "none");
+        char buffer[420];
+        snprintf(buffer, sizeof(buffer), R"({"url":"%s","hasToken":%s,"connected":%s,"brain":"%s"})",
+                 url.c_str(), has_token ? "true" : "false", app->_connected.load() ? "true" : "false", brain);
+        httpd_resp_sendstr(req, buffer);
+        return ESP_OK;
+    }
+
+    if (req->content_len > 768) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too large");
+        return ESP_FAIL;
+    }
+    char body[769] = {0};
+    int received = 0;
+    while (received < (int)req->content_len) {
+        int chunk = httpd_req_recv(req, body + received, req->content_len - received);
+        if (chunk <= 0) return ESP_FAIL;
+        received += chunk;
+    }
+    ArduinoJson::JsonDocument doc;
+    if (ArduinoJson::deserializeJson(doc, body) != ArduinoJson::DeserializationError::Ok) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+        return ESP_FAIL;
+    }
+    const char* url = doc["url"] | "";
+    const char* token = doc["token"] | "";
+    if (url[0] && strncmp(url, "ws://", 5) != 0 && strncmp(url, "wss://", 6) != 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "url must be ws:// or wss://");
+        return ESP_FAIL;
+    }
+    if (!app->saveBrainConfig(url, token)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "nvs write failed");
+        return ESP_FAIL;
+    }
+    {
+        std::lock_guard<std::mutex> lock(app->_mutex);
+        app->_brain_url = url;
+        app->_brain_token = token;
+    }
+    app->_brain_config_dirty = true;
+    mclog::tagInfo(TAG, "brain config updated: {}", url[0] ? url : "(cleared)");
+    char response[360];
+    snprintf(response, sizeof(response), R"({"ok":true,"url":"%s"})", url);
+    httpd_resp_sendstr(req, response);
+    return ESP_OK;
 }
 
 struct CameraTaskParams {
@@ -560,6 +883,8 @@ void AppRemoteAgent::onRunning()
     } else if (!_websocket_server) {
         startWebSocketServer();
     }
+
+    maintainBrainClient();
 
     if (!_tasks_stopping && (!_audio_playback_task.load() || !_audio_capture_task.load() || !_audio_capture_send_task.load())) {
         startAudioTasks();
@@ -1104,27 +1429,41 @@ void AppRemoteAgent::sendJson(const std::string& data)
 
 bool AppRemoteAgent::sendWebSocketFrame(const uint8_t* data, size_t len, bool binary)
 {
-    if (!_websocket_server || _websocket_fd.load() < 0 || !_connected) {
+    if (!_connected) {
         return false;
     }
 
-    httpd_ws_frame_t frame = {};
-    frame.type = binary ? HTTPD_WS_TYPE_BINARY : HTTPD_WS_TYPE_TEXT;
-    frame.payload = const_cast<uint8_t*>(data);
-    frame.len = len;
+    // A local (server) brain session always owns the send path when present.
+    if (_websocket_server && _websocket_fd.load() >= 0) {
+        httpd_ws_frame_t frame = {};
+        frame.type = binary ? HTTPD_WS_TYPE_BINARY : HTTPD_WS_TYPE_TEXT;
+        frame.payload = const_cast<uint8_t*>(data);
+        frame.len = len;
 
-    esp_err_t err = httpd_ws_send_data(_websocket_server, _websocket_fd.load(), &frame);
-    if (err != ESP_OK) {
-        mclog::tagInfo(TAG, "websocket send failed: {}", (int)err);
-        _websocket_fd.store(-1);
-        _connected = false;
-        _hello_pending = false;
-        _audio_streaming = false;
-        cancelPlayback(false);
-        queueStatus("offline", websocket_listen_url().c_str());
-        return false;
+        esp_err_t err = httpd_ws_send_data(_websocket_server, _websocket_fd.load(), &frame);
+        if (err != ESP_OK) {
+            mclog::tagInfo(TAG, "websocket send failed: {}", (int)err);
+            _websocket_fd.store(-1);
+            _connected = false;
+            _hello_pending = false;
+            _audio_streaming = false;
+            cancelPlayback(false);
+            queueStatus("offline", offlineStatusText().c_str());
+            return false;
+        }
+        return true;
     }
-    return true;
+
+    if (_client_link_active.load() && _ws_client) {
+        // The client library detects dead links itself and emits DISCONNECTED;
+        // a failed send here must not tear down state from an audio task.
+        const char* payload = reinterpret_cast<const char*>(data);
+        int sent = binary ? esp_websocket_client_send_bin(_ws_client, payload, len, pdMS_TO_TICKS(2000))
+                          : esp_websocket_client_send_text(_ws_client, payload, len, pdMS_TO_TICKS(2000));
+        return sent >= 0;
+    }
+
+    return false;
 }
 
 bool AppRemoteAgent::sendPacket(uint8_t type, const uint8_t* data, size_t len)
@@ -2490,6 +2829,7 @@ void AppRemoteAgent::onClose()
     }
     stopAudioTasks();
     _audio_streaming = false;
+    stopBrainClient();
     stopWebSocketServer();
     clearRenderScene();
     LvglLockGuard lock;

@@ -65,9 +65,25 @@ Keep `AppLauncher` installed first. A safe placement is after `AppAvatar()` and 
 
 ## Configure WebSocket Server
 
-The firmware hosts `ws://<stackchan>:6001/stacky/device`. It requires the `esp_http_server` component and `CONFIG_HTTPD_WS_SUPPORT=y`; `scripts/patch-stackchan.sh` applies those build settings.
+The firmware hosts `ws://<stackchan>:6001/stacky/device`. It requires the `esp_http_server` component and `CONFIG_HTTPD_WS_SUPPORT=y`; `scripts/patch-stackchan.sh` applies those build settings (plus `nvs_flash` and the `espressif/esp_websocket_client` managed component for brain dial-out).
 
 Do not commit private LAN IPs to reusable files. Put the StackChan URL in the brain server environment as `STACKY_DEVICE_WS_URL`. Firmware does not construct brain URLs; the brain sends full device-reachable URLs in commands.
+
+## Brain Dial-Out
+
+The device can also dial a remote brain (for example an aggy server behind a Cloudflare tunnel) instead of waiting for a LAN connection. Configure it over plain HTTP on the same port:
+
+```bash
+curl -X POST http://<stackchan>:6001/stacky/brain \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"wss://brain.example.com/api/stacky/device","token":"<shared secret>"}'
+curl http://<stackchan>:6001/stacky/brain   # {"url":...,"hasToken":...,"connected":...,"brain":"local|remote|none"}
+```
+
+- The URL and token persist in NVS (`stacky` namespace) and survive reboots. POST `{"url":""}` clears them.
+- The token is sent as `Authorization: Bearer <token>` on the dial-out connection. `wss://` uses the ESP-IDF certificate bundle, so public CAs (Cloudflare) verify without custom certs.
+- The dial-out link speaks the exact same protocol as the device-hosted socket: same hello, commands, packets.
+- Precedence: a brain connecting to the device's own WebSocket server always wins; the dial-out link stands down while a local brain is attached and resumes (3s reconnect cadence) when it leaves. This keeps LAN development working unchanged while production runs remote.
 
 ## App Behavior
 
